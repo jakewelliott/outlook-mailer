@@ -1,0 +1,69 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "New send: columns" %}
+{% macro column_select(name, label, required) %}
+  <p>
+    <label for="{{ name }}">{{ label }}{% if required %} <span class="req">(required)</span>{% endif %}</label><br>
+    <select id="{{ name }}" name="{{ name }}"{% if required %} required{% endif %}>
+      <option value=""{% if not chosen[name] %} selected{% endif %}>
+        {%- if required %}Choose a column{% else %}— none: send to everyone —{% endif -%}
+      </option>
+    {% for header in parsed.headers %}
+      <option value="{{ header }}"{% if header == chosen[name] %} selected{% endif %}>{{ header }}</option>
+    {% endfor %}
+    </select>
+    {{ caller() if caller is defined else "" }}
+  </p>
+{% endmacro %}
+{% block content %}
+<h1>New send</h1>
+<p class="muted">Step 2 of 3: tell the app which columns hold what.
+  <strong>{{ draft.original_name }}</strong>: {{ parsed.rows | length }} rows, {{ parsed.headers | length }} columns.
+  <a href="/send/new">Upload a different file</a></p>
+
+{% if errors %}
+<div class="error" role="alert">
+  <ul>
+  {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<form method="post" action="/send/{{ draft.id }}/mapping" id="mapping-form">
+  {{ csrf_field(request) }}
+  <section class="card">
+    <h2>Columns</h2>
+    {{ column_select("email", "Email address", true) }}
+    {{ column_select("first_name", "First name", true) }}
+    {% call column_select("status", "Email subscription status", false) %}
+      <button type="submit" name="action" value="refresh" class="secondary" id="status-refresh">Show values</button>
+    {% endcall %}
+    <p class="muted">Leave the status column on <em>none</em> if your file has no such column: everyone on the
+      list is then sent the email (except addresses that have unsubscribed).</p>
+  </section>
+
+  <input type="hidden" name="status_shown" value="{{ chosen.status or '' }}">
+  {% if chosen.status %}
+  <section class="card">
+    <h2>Send to rows whose status is…</h2>
+    <p class="muted">Ticked values are sent to; rows with unticked values are skipped. Values that look like an
+      opt-out start unticked. <em>(blank — no status)</em> also starts unticked: tick it to send to rows that have
+      an email address but no status (rows with no email address are never sent to).</p>
+    <table class="ref">
+      <thead><tr><th>Send</th><th>Value in “{{ chosen.status }}”</th><th>Rows</th></tr></thead>
+      <tbody>
+      {% for v in values %}
+        <tr>
+          <td><input type="checkbox" id="sv-{{ loop.index }}" name="status_value" value="{{ v.key }}"
+            {%- if v.key in selected %} checked{% endif %}></td>
+          <td><label for="sv-{{ loop.index }}">{% if v.label %}{{ v.label }}{% else %}<em>(blank — no status)</em>{% endif %}</label></td>
+          <td>{{ v.count }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <p><button type="submit" name="action" value="save">Continue</button></p>
+</form>
+{% endblock %}

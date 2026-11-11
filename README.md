@@ -5,8 +5,9 @@ CSV, map the email and first-name columns, write the message in Markdown, previe
 template, send yourself a test, then run a rate-limited bulk send through Microsoft Graph (one email per recipient,
 with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Docker container.
 
-> **Status: under construction.** So far: configuration, `/healthz`, the Docker image, and the admin UI shell with
-> the Cloudflare Access check and the help page. See [docs/PLAN.md](docs/PLAN.md) for the build plan.
+> **Status: under construction.** So far: configuration, `/healthz`, the Docker image, the admin UI shell with
+> the Cloudflare Access check and the help page, and CSV upload with column mapping and the validation report.
+> See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
 
@@ -23,6 +24,24 @@ The app also checks the Access JWT itself (the `Cf-Access-Jwt-Assertion` header:
 audience and issuer) on every other request, so the admin pages can't be used by going to the container's port
 directly. Forms carry a CSRF token and POSTs must come from `PUBLIC_BASE_URL`. Full Cloudflare setup comes later in
 `docs/cloudflare.md`.
+
+### CSV and column mapping
+
+On **New send** you upload any CSV whose first row holds the column names (a Square customer export works as-is).
+The app works out the encoding (UTF-8, UTF-8 with BOM, or Windows/Excel cp1252) and the separator (comma, semicolon
+or tab), then shows three dropdowns filled from the header: **Email address** and **First name** (both required)
+and **Email subscription status** (optional). They are preselected from the column names, e.g. `Email Address`,
+`First Name` and `Email Subscription Status`, and can be changed. If you pick a status column, the app lists its
+distinct values with counts and you tick the ones to send to; values that look like opt-outs (`unsubscribed`,
+`bounced`, `not_subscribed`, `no`, `false`, `opted out`, `pending`, `unknown`…) start unticked, while `subscribed`
+or `opted in` start ticked. A blank status is listed as "(blank — no status)" and also starts unticked; tick it to
+send to rows that have an email address but no status. Square exports use `subscribed`, `unsubscribed`, blank and
+`bounced`. Leave status on *none* and everyone on the list is eligible. Other columns are ignored. The next page
+reports how many rows will be sent to and why the rest won't: missing or invalid email, duplicate address (the first
+row is kept), skipped by status, or already in `unsubscribed.txt`. A missing first name is only a warning (the
+merge field fallback is used). The full list of problems can be downloaded as a CSV. The uploaded file is kept in
+`DATA_DIR/uploads/` (readable only by the app) until the campaign ends. Limits: `MAX_UPLOAD_MB` and
+`MAX_RECIPIENTS`.
 
 ## Decisions
 

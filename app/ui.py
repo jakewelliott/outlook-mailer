@@ -21,7 +21,8 @@ NAV = [
     ("/unsubscribes", "Unsubscribes"),
     ("/account", "Account"),
 ]
-PLACEHOLDERS = {path: label for path, label in NAV if path != "/"}
+# Pages with real routes elsewhere: "/" here, "/send/new" in ui_send.
+PLACEHOLDERS = {path: label for path, label in NAV if path not in ("/", "/send/new")}
 
 
 def _templates() -> Jinja2Templates:

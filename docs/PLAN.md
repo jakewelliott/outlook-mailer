@@ -68,8 +68,13 @@ The app refuses to start if a required variable is missing or invalid, and says 
   - **First name** (required)
   - **Email subscription status** (optional, may be left blank)
 - If a status column is chosen, the UI lists its distinct values with counts and a checkbox each: "send to rows with
-  this value". Values that look like opt-outs (contain `unsub`, `not`, `opt`, `no`, `false`, or are empty) start
-  unchecked; others start checked. Unchecked rows are skipped and reported as `skipped_status`.
+  this value". Values that look like opt-outs start unchecked; others start checked. Matching is on whole words: a
+  word starting with `unsub`, `notsub`, `nonsub` or `bounc`; "opt(ed) out" in any spelling; a negative word (`no`,
+  `not`, `false`, `0`, `never`, `declined`…); or `pending`, `unconfirmed`, `cleaned`, `unknown`. `opt` alone is not a
+  signal (`opted in` stays checked) and `not` inside a word doesn't count (`Notified` stays checked). Blank starts
+  unchecked and is labelled "(blank — no status)"; ticking it sends to rows that have an email but no status. Square's
+  real values are `subscribed`, `unsubscribed`, blank and `bounced`. Unchecked rows are skipped and reported as
+  `skipped_status`.
 - If no status column is chosen, everyone on the list is eligible.
 - Validation report: invalid email, duplicate email (keep first), missing email, unsubscribed (in `unsubscribed.txt`),
   skipped by status. Counts plus a downloadable list.

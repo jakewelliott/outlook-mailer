@@ -1,0 +1,57 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "New send: check the list" %}
+{% block content %}
+<h1>New send</h1>
+<p class="muted">Step 3 of 3: check the list. <strong>{{ draft.original_name }}</strong>.
+  <a href="/send/{{ draft.id }}/mapping">Change the columns</a></p>
+
+<section class="card">
+  <h2>{{ report.eligible | length }} of {{ report.total_rows }} rows will be sent the email</h2>
+  <table class="ref">
+    <tbody>
+    {% for c in categories %}
+      <tr{% if report.counts[c] %} class="has-count"{% endif %}><td>{{ labels[c] }}</td><td>{{ report.counts[c] }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if not report.eligible %}
+  <p class="error" role="alert">Nobody on this list can be sent the email. Check the columns and status values.</p>
+  {% endif %}
+</section>
+
+{% if report.issues %}
+<section class="card">
+  <h2>Problems and warnings</h2>
+  {% if report.issues | length > issues | length %}
+  <p class="muted">The first {{ issues | length }} of {{ report.issues | length }}.</p>
+  {% endif %}
+  <table class="ref">
+    <thead><tr><th>Row</th><th>Problem</th><th>Email</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for i in issues %}
+      <tr><td>{{ i.row }}</td><td>{{ labels[i.category] }}</td><td>{{ i.email }}</td><td>{{ i.message }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p><a href="/send/{{ draft.id }}/issues.csv">Download the full list (CSV)</a></p>
+</section>
+{% endif %}
+
+{% if sample %}
+<section class="card">
+  <h2>First recipients</h2>
+  <table class="ref">
+    <thead><tr><th>Row</th><th>Email</th><th>First name</th></tr></thead>
+    <tbody>
+    {% for r in sample %}
+      <tr><td>{{ r.row }}</td><td>{{ r.email }}</td><td>{% if r.first_name %}{{ r.first_name }}{% else %}<em class="muted">(blank)</em>{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if report.eligible %}
+<p><a class="button" href="/send/{{ draft.id }}/compose">Continue to compose</a></p>
+{% endif %}
+{% endblock %}

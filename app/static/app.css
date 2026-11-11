@@ -67,3 +67,25 @@ main.wrap { padding-bottom: 3rem; }
 table.ref { border-collapse: collapse; width: 100%; }
 table.ref th, table.ref td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.ref th { color: var(--muted); font-weight: 600; font-size: 0.9rem; }
+
+/* Forms (new send) */
+label { font-weight: 600; }
+select, input[type="file"] { font: inherit; margin-top: 0.25rem; max-width: 100%; }
+button, a.button {
+  display: inline-block;
+  font: inherit;
+  font-weight: 600;
+  background: var(--pine);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.5rem 1.1rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+button:hover, a.button:hover { background: #163d24; color: #fff; }
+button.secondary { background: #fff; color: var(--pine); border: 1px solid var(--pine); padding: 0.3rem 0.8rem; margin-left: 0.5rem; }
+.req { color: var(--muted); font-weight: normal; font-size: 0.9rem; }
+.error { background: #fbeaea; border: 1px solid var(--red); color: var(--red-dark); border-radius: 6px; padding: 0.6rem 1rem; }
+.error ul { margin: 0; padding-left: 1.2rem; }
+tr.has-count td:last-child { font-weight: 700; }

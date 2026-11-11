@@ -7,14 +7,18 @@ invalid, accessing ``app`` prints each problem and exits, so the server refuses 
 
 import logging
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app import ui
+from app import ui, ui_send
 from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
+from app.db import Database
 from app.security import CsrfSigner, Forbidden, RequestGuard, forbidden_response
 
 log = logging.getLogger("outlook_mailer")
@@ -37,11 +41,22 @@ def create_app(settings: Settings | None = None, verifier: AccessVerifier | None
             "Use this for local testing only."
         )
 
-    app = FastAPI(title="outlook-mailer", docs_url=None, redoc_url=None, openapi_url=None)
+    db = Database(Path(settings.data_dir) / "app.db")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        db.init()  # create the schema at startup so a bad DATA_DIR fails early
+        yield
+
+    app = FastAPI(
+        title="outlook-mailer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
+    )
     app.state.settings = settings
+    app.state.db = db
     app.state.csrf_signer = CsrfSigner(settings.unsubscribe_secret)
     app.add_middleware(RequestGuard, settings=settings, verifier=verifier)
     app.add_exception_handler(Forbidden, forbidden_response)
+    app.add_exception_handler(ui_send.UploadTooLarge, ui_send.upload_too_large)
 
     # HEAD too, for uptime monitors that probe with it.
     @app.api_route("/healthz", methods=["GET", "HEAD"])
@@ -49,6 +64,8 @@ def create_app(settings: Settings | None = None, verifier: AccessVerifier | None
         return {"ok": True}
 
     app.include_router(ui.router)
+    app.include_router(ui_send.upload_router)
+    app.include_router(ui_send.router)
     # Admin-only: the guard protects everything outside the public paths.
     app.mount("/static", StaticFiles(directory=ui.STATIC_DIR), name="static")
 

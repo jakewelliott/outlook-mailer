@@ -1,0 +1,27 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "New send: upload" %}
+{% block content %}
+<h1>New send</h1>
+<p class="muted">Step 1 of 3: upload your list. Next you pick the columns, then check the list.</p>
+
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+
+<section class="card">
+  <h2>Upload a CSV</h2>
+  <form method="post" action="/send/new" enctype="multipart/form-data">
+    {{ csrf_field(request) }}
+    <p>
+      <label for="{{ field }}">CSV file</label><br>
+      <input type="file" id="{{ field }}" name="{{ field }}" accept=".csv,text/csv" required>
+    </p>
+    <p><button type="submit">Upload</button></p>
+  </form>
+  <ul class="muted">
+    <li>The first row must be the column names. Other columns are ignored.</li>
+    <li>Comma, semicolon and tab separated files all work, in UTF-8 or Windows (Excel) encoding.</li>
+    <li>Up to {{ settings.max_upload_mb }} MB and {{ settings.max_recipients }} rows.</li>
+  </ul>
+</section>
+{% endblock %}
