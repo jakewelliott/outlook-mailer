@@ -1,0 +1,55 @@
+# Research notes (checked 2026-10-25)
+
+Saved from the planning stage. Section 2.3 conclusion is superseded: we send MIME, which may carry List-Unsubscribe-Post (verified in stage 12).
+
+## 2. Key findings from research (checked 2026-10-25)
+
+### 2.1 Sending from a free personal Outlook.com account
+| Finding | Source |
+|---|---|
+| **Basic auth / app passwords for Outlook.com were switched off around 16 Sep 2024.** SMTP with a password fails with `5.7.139 ... basic authentication is disabled`. Only OAuth is left. Microsoft's own page (Feb 2024) promised full removal. The date comes from secondary sources. | https://support.microsoft.com/en-us/help/5035414 (2024-02-27); https://bluemail.me/app-password/outlook/ ; https://forum.manager.io/t/smtp-stopped-working/58010 ; https://docs.n8n.io/integrations/builtin/credentials/send-email/outlook |
+| For reference only (work/school accounts, not the user's case): Exchange Online SMTP AUTH basic auth is **disabled by default at the end of Dec 2026** (admins can re-enable it), and the final removal date will be announced in H2 2027 (MC786329, updated 2026-01-27). | https://office365itpros.com/2026/01/29/smtp-auth-basic-retirement/ ; https://mc.merill.net/message/MC786329/compare/2024-10-18T16-26-45-83Z/2026-01-27T20-11-01-253Z |
+| Graph `sendMail` supports **delegated `Mail.Send` for personal Microsoft accounts**. Application permissions (client credentials) are **not** available for personal accounts. | https://learn.microsoft.com/en-us/graph/api/user-sendmail |
+| SMTP XOAUTH2 (`https://outlook.office.com/SMTP.Send`) is documented for both M365 and Outlook.com. Some report consumer tokens failing against SMTP. Graph is the better-documented path. | https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth (updated 2025-10-17); https://learn.microsoft.com/en-sg/answers/questions/2125483/send-email-via-microsoft-graph-with-personal-accou |
+| **Device code flow works with `/consumers`**. You need the `offline_access` scope to get a refresh token. The user signs in on any browser. | https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code (updated 2026-06-15) |
+| Refresh tokens: **90-day** default lifetime (24 h for SPAs). A new one replaces the old on each use, so a cache that is used stays valid. They can be revoked, for example on a password change. | https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens (updated 2026-06-15) |
+| **App registration problem:** creating apps "outside of a directory" with a personal account is **deprecated**. The app has to live in an Entra tenant with "Accounts in any organizational directory and personal Microsoft accounts" (or "Personal accounts only") and **Allow public client flows = Yes**. A Microsoft 365 Family/Personal subscription does not include a tenant. | https://learn.microsoft.com/en-us/answers/questions/2127352/how-to-move-an-azure-application-created-under-a-p ; https://www.wps.com/office-quick-solution/others/can-microsoft-365-family-users-register-microsoft-graph-apps/ ; https://docs.pointsharp.com/cryptshare-for-outlook/ms-graph-setting-up.html |
+| **Free ways to get a tenant (all have caveats, see Q1):** (a) a **free Azure account**, which comes with an Entra ID Free tenant at no charge but needs a **credit card for identity verification**; (b) an **Entra External ID free trial tenant**, with no payment info but described as a 30-day preview "for testing", so long-term behavior is unknown; (c) the **M365 Developer Program**, which I recall was restricted around 2024 to Visual Studio subscribers or partners (not re-verified), so it is probably unavailable. | https://learn.microsoft.com/en-in/entra/external-id/customers/quickstart-trial-setup ; https://help.trugrid.com/en/article/how-to-create-a-free-tier-entraid-tenant-to-use-for-securerdp-3jczbd/ ; https://www.unipile.com/microsoft-graph-oauth-email/ |
+| Rejected: borrowing another app's public client ID, such as Thunderbird's or Office's. It impersonates a third-party app, can break without warning, and is against the spirit of Microsoft's terms. | (design decision) |
+| Microsoft is rolling out managed Conditional Access policies that block device code flow, but **only in work tenants**. This does not affect a personal account. | https://securityboulevard.com/2025/04/blocking-device-code-flow-in-microsoft-entra-id |
+
+### 2.2 Limits and deliverability
+| Finding | Source |
+|---|---|
+| Outlook.com: **5,000 recipients/day, 500 per message, 1,000 new ("non-relationship") recipients/day for M365 subscribers**. Limits are **lower for non-subscribers**, with no figure published. New accounts start with a low quota. | https://support.microsoft.com/en-us/outlook/sending-limits-in-outlook-com |
+| Free-account figure of **about 300 recipients/day** comes only from third parties and is unverified. | https://www.securemailmerge.com/knowledge/outlook-email-sending-limits/ ; https://learn.microsoft.com/en-us/answers/a/12758366 |
+| Exchange Online (reference): 10,000 recipients/day, 30 messages/min. Page updated 2026-10-19. | https://learn.microsoft.com/en-us/office365/servicedescriptions/exchange-online-service-description/exchange-online-limits |
+| Graph Outlook throttling: 10,000 requests per 10 min per app per mailbox, 4 concurrent requests. A 429 response comes with `Retry-After`. | https://devblogs.microsoft.com/microsoft365dev/?p=4523 ; https://github.com/microsoftgraph/microsoft-graph-docs-contrib/blob/main/concepts/throttling-limits.md |
+| Outlook.com high-volume sender rules (effective 5 May 2025) apply above **5,000/day**, so not to us. The best practices still apply: a working reply-to address and an easy unsubscribe. | https://mailtrap.io/blog/outlook-new-email-sender-requirements/ ; https://redsift.com/tools/microsoft-sender-requirements |
+| Practical risk: sudden bulk sending to many new recipients from a free account can trigger an "unusual activity" lock or a temporary send block. So the plan uses a slow default rate, a daily cap and stop-on-error. | (inferred from the above) |
+
+### 2.3 Headers via Graph
+| Finding | Source |
+|---|---|
+| Graph `internetMessageHeaders` accepts **only `x-` custom headers**, with a cap of about 5. `List-Unsubscribe` can be set through the extended property **`String 0x1045`** (a mailto value works). `List-Unsubscribe-Post` (one-click) **cannot** be set reliably through Graph JSON. | https://learn.microsoft.com/en-us/graph/api/resources/message ; https://learn.microsoft.com/en-us/answers/questions/1460824/sending-emails-using-ms-graph-with-list-unsubscrib ; https://learn.microsoft.com/en-us/answers/questions/2128545/how-to-set-both-list-unsubscribe-post-and-list-uns |
+
+Result: RFC 8058 one-click unsubscribe is not practical. A **mailto List-Unsubscribe** is. Stage 11 checks whether consumer mailboxes keep the 0x1045 property, by viewing the test email's headers.
+
+### 2.4 CAN-SPAM (FTC guide, penalty figure updated Jan 2024)
+Source: https://www.ftc.gov/business-guidance/resources/can-spam-act-compliance-guide-business
+1. From, To, Reply-To and routing info must be accurate (true with Graph, since mail comes from the real mailbox).
+2. The subject line must not be deceptive.
+3. The message must be identified as an advertisement (clear and conspicuous), *for commercial messages*. Recipients who gave prior affirmative consent are exempt.
+4. A valid **physical postal address**: a street address, a **USPS-registered PO box**, or a CMRA private mailbox.
+5. A **clear opt-out notice and mechanism**: a reply email address or an internet-based method. It must work for **at least 30 days** after sending, opt-outs must be honored **within 10 business days**, there can be no fee, and you cannot ask for more than an email address or require more than a reply or one web page.
+6. Opted-out addresses must not be sold or transferred.
+7. The law covers **commercial** messages under the "primary purpose" test. Personal or non-commercial holiday greetings may fall outside it, but the plan always includes the footer. Penalties are up to **$53,088 per email**. Whether the email is commercial is Q4.
+
+### 2.5 Template techniques (well-established practice, no single source)
+- Tables with `role="presentation"`, a 600px max width, fully inline CSS, and a `<style>` block only for media queries and dark mode. CSS is inlined at render time with the `css-inline` package.
+- Classic Outlook for Windows (Word engine): `<!--[if mso]>` ghost tables, `mso-line-height-rule`, VML `v:roundrect` buttons and `v:rect`/`v:fill` for any background image, and the `xmlns:v`/`xmlns:o` plus `OfficeDocumentSettings`/`PixelsPerInch` block.
+- Dark mode: `<meta name="color-scheme" content="light dark">` and `supported-color-schemes`, `@media (prefers-color-scheme: dark)` for Apple Mail/iOS, and `[data-ogsc]`/`[data-ogsb]` selectors for Outlook.com and the Outlook apps. Choose colors that survive Gmail-app full inversion: red/green/gold on a mid-tone, transparent PNGs with a light outline, and no thin dark text on transparent images.
+- Gmail clips HTML over **102 KB**, so the plan tests a size budget. Gmail and Outlook block `data:` URI images. CID inline images display in Outlook desktop, Outlook.com, Apple Mail and Gmail.
+- System font stacks (Georgia or Arial). Decorations use Unicode or emoji (❄ ✦ 🎄), which render everywhere, or small images (Q14). Alt text everywhere. The layout still reads well with images off: bgcolor fallbacks and live text, not text inside images.
+- A `multipart/alternative` plain-text part (Graph `sendMail` JSON allows only one body, see Risks R5).
+
