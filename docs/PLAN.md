@@ -58,6 +58,7 @@ The app refuses to start if a required variable is missing or invalid, and says 
   `iss` = `https://<CF_ACCESS_TEAM_DOMAIN>`, `exp` checked). Missing or invalid gives 403. This also blocks anyone
   hitting the LAN port directly. No separate app login.
 - CSRF token on all admin POSTs, plus an Origin check. CSP `default-src 'self'`; previews in `<iframe sandbox srcdoc>`.
+  Admin responses send `Referrer-Policy: same-origin` (public paths `no-referrer`); `Origin: null` is rejected.
 
 ## CSV and mapping
 
@@ -145,12 +146,12 @@ Each stage: one coding agent, one reviewer, one commit to `main`. Tests run in D
 | 5 | Merge engine | fallbacks, escaping, unknown-field errors, `{{7*7}}` not evaluated |
 | 6 | Markdown → email HTML + plain text | all syntax above incl. `++underline++`; raw HTML escaped; unsafe links rejected |
 | 7 | Christmas template (Cerberus-based) + free-license images at `/img/*` + CREDITS.md | lint checks (no script, alt/width/height, < 102 KB, absolute image URLs); snapshot tests |
-| 8 | Compose page, saved settings, live preview (light/dark) | footer required fields enforced; preview for any row |
+| 8 | Compose page, saved settings, live preview (light/dark) | footer required fields enforced; preview for any row. Note: an `<iframe sandbox srcdoc>` inherits the admin CSP (`style-src 'self'`), so the preview needs a per-route CSP allowing inline styles for that frame, or is served from its own route with its own CSP |
 | 9 | Message builder (MIME) + transport interface + mock transport | valid multipart/alternative `.eml`; single recipient; List-Unsubscribe headers |
 | 10 | Send job engine, progress UI, results CSV, CSV deletion | rate/cap/retry/pause/resume/cancel; exactly-once across restart; `unsubscribed.txt` checked at send time |
 | 11 | Microsoft device-code sign-in, encrypted token cache, account page | mocked MSAL tests; manual sign-in (needs Jake) |
 | 12 | Graph transport, test-send gate | respx tests; manual real test send and header check (needs Jake) |
-| 13 | Unsubscribe pages, `unsubscribed.txt`, admin view/download | token tests; GET doesn't unsubscribe; POST appends once |
+| 13 | Unsubscribe pages, `unsubscribed.txt`, admin view/download | token tests; GET doesn't unsubscribe; POST appends once. Note: `/static/` is admin-only, so public pages need their own minimal styling and CSP |
 | 14 | README (decisions + fresh-clone setup), `docs/entra-setup.md`, `docs/cloudflare.md`, `unraid/outlook-mailer.xml`, v1.0.0 | someone can set up from a fresh clone using only the README |
 
 Stages 1–10 and 13 need no Microsoft account (`MAIL_TRANSPORT=mock`, `AUTH_DISABLED=1` in tests).

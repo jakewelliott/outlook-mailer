@@ -1,0 +1,73 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "How it works" %}
+{% block content %}
+<h1>How it works</h1>
+<p>Send one holiday email to everyone on a CSV list, from your Outlook.com account, one message per person.</p>
+
+<section class="card">
+  <h2>Steps</h2>
+  <ol class="steps">
+    <li><strong>Connect your Outlook account</strong> on the <a href="/account">Account</a> page. You only do this
+      once: you enter a short code at the Microsoft link the app shows.</li>
+    <li><strong>Upload your CSV</strong> on <a href="/send/new">New send</a>. The first row must be the column
+      names.</li>
+    <li><strong>Pick the columns</strong>: the <em>Email</em> column and the <em>First name</em> column (both
+      required), and optionally the <em>subscription status</em> column. If you pick a status column, tick the
+      values you want to send to.</li>
+    <li><strong>Write the subject and the body</strong>. The body is Markdown (see below) and can use merge
+      fields.</li>
+    <li><strong>Fill in the footer</strong>: business name and postal address. The law for commercial email
+      (CAN-SPAM) requires them, and the app adds the unsubscribe link itself.</li>
+    <li><strong>Preview</strong> the email for any row of your list.</li>
+    <li><strong>Send a test to yourself</strong>. Sending to the list stays locked until a test of the current
+      version has gone out.</li>
+    <li><strong>Start the send</strong>. You can pause, resume or cancel it, and it carries on after a restart.</li>
+  </ol>
+</section>
+
+<section class="card">
+  <h2>Merge fields</h2>
+  <p>These are replaced for each recipient, in the subject and the body.</p>
+  <table class="ref">
+    <thead><tr><th>Write</th><th>Becomes</th></tr></thead>
+    <tbody>
+{% raw %}
+      <tr><td><code>{{first_name}}</code></td><td>The recipient's first name</td></tr>
+      <tr><td><code>{{email}}</code></td><td>The recipient's email address</td></tr>
+      <tr><td><code>{{first_name|Friend}}</code></td><td>The first name, or <q>Friend</q> if it is blank</td></tr>
+{% endraw %}
+    </tbody>
+  </table>
+  <p class="muted">Any other field name is an error and blocks sending.</p>
+</section>
+
+<section class="card">
+  <h2>Formatting the body (Markdown)</h2>
+  <table class="ref">
+    <thead><tr><th>Write</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td><code>**bold**</code></td><td><strong>bold</strong></td></tr>
+      <tr><td><code>*italic*</code></td><td><em>italic</em></td></tr>
+      <tr><td><code>~~strike~~</code></td><td><s>strike</s></td></tr>
+      <tr><td><code>++underline++</code></td><td><u>underline</u></td></tr>
+      <tr><td><code>[our shop](https://example.com)</code></td><td>a link (http, https or mailto only)</td></tr>
+      <tr><td><code>- item</code> or <code>1. item</code></td><td>bullet or numbered list</td></tr>
+      <tr><td><code># Heading</code>, <code>## Smaller heading</code></td><td>headings</td></tr>
+      <tr><td>a blank line</td><td>a new paragraph</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">HTML typed into the body is shown as text, not used.</p>
+</section>
+
+<section class="card">
+  <h2>Pacing and unsubscribes</h2>
+  <ul>
+    <li>Messages go out at <strong>{{ settings.send_rate_per_minute }} per minute</strong>, at most
+      <strong>{{ settings.daily_send_cap }} in any 24 hours</strong>. When the daily cap is reached the send waits
+      and continues by itself. This keeps the Outlook account from being flagged.</li>
+    <li>Every email has an unsubscribe link. Opt-outs are recorded in <code>unsubscribed.txt</code> (see
+      <a href="/unsubscribes">Unsubscribes</a>) and those addresses are <strong>skipped automatically</strong> at
+      send time, even if they are still in your CSV. Remove them from your list when you can.</li>
+  </ul>
+</section>
+{% endblock %}

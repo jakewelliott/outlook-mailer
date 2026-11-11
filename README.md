@@ -5,8 +5,8 @@ CSV, map the email and first-name columns, write the message in Markdown, previe
 template, send yourself a test, then run a rate-limited bulk send through Microsoft Graph (one email per recipient,
 with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Docker container.
 
-> **Status: under construction.** Only the scaffold exists so far (configuration and `/healthz`). See
-> [docs/PLAN.md](docs/PLAN.md) for the build plan.
+> **Status: under construction.** So far: configuration, `/healthz`, the Docker image, and the admin UI shell with
+> the Cloudflare Access check and the help page. See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
 
@@ -14,7 +14,15 @@ _To be written._
 
 ## How it works
 
-_To be written._
+### Access
+
+The app is reached through a Cloudflare tunnel and protected by a Cloudflare Access application, which decides who
+can sign in. Everything is protected except `/u/*` (unsubscribe links), `/img/*` (images in emails) and `/healthz`;
+those need a Bypass policy in Access because email recipients and health checks must reach them without signing in.
+The app also checks the Access JWT itself (the `Cf-Access-Jwt-Assertion` header: RS256, Cloudflare's published keys,
+audience and issuer) on every other request, so the admin pages can't be used by going to the container's port
+directly. Forms carry a CSRF token and POSTs must come from `PUBLIC_BASE_URL`. Full Cloudflare setup comes later in
+`docs/cloudflare.md`.
 
 ## Decisions
 

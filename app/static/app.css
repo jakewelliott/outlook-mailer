@@ -1,0 +1,69 @@
+/* outlook-mailer admin UI. No external fonts or CDNs. */
+:root {
+  --red: #9b1c1c;
+  --red-dark: #741414;
+  --pine: #1f5130;
+  --gold: #c9a227;
+  --cream: #fbf7ef;
+  --ink: #23201c;
+  --muted: #6b645b;
+  --line: #e4dccb;
+  --card: #ffffff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--cream);
+  color: var(--ink);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+h1, h2 { font-family: Georgia, "Times New Roman", serif; color: var(--pine); line-height: 1.2; }
+h1 { font-size: 2rem; margin: 1.5rem 0 0.75rem; }
+h2 { font-size: 1.3rem; margin: 0 0 0.75rem; }
+
+a { color: var(--red); }
+a:hover { color: var(--red-dark); }
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: #f3ecdc;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.wrap { max-width: 860px; margin: 0 auto; padding: 0 1.25rem; }
+main.wrap { padding-bottom: 3rem; }
+
+.site-header {
+  background: var(--red);
+  border-bottom: 4px solid var(--gold);
+  color: #fff;
+}
+.header-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.5rem; padding-block: 0.75rem; }
+.brand { color: #fff; font-family: Georgia, serif; font-size: 1.25rem; font-weight: bold; text-decoration: none; }
+.brand:hover { color: #fff; }
+.nav { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; list-style: none; margin: 0; padding: 0; }
+.nav a { color: #fff; text-decoration: none; padding: 0.2rem 0; border-bottom: 2px solid transparent; }
+.nav a:hover, .nav a[aria-current="page"] { color: #fff; border-bottom-color: var(--gold); }
+.who { margin: 0 0 0 auto; font-size: 0.9rem; opacity: 0.95; }
+.warn { background: var(--gold); color: var(--ink); padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: 600; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--pine);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  margin: 1.25rem 0;
+}
+
+.steps li { margin-bottom: 0.5rem; }
+.muted { color: var(--muted); }
+
+table.ref { border-collapse: collapse; width: 100%; }
+table.ref th, table.ref td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.ref th { color: var(--muted); font-weight: 600; font-size: 0.9rem; }

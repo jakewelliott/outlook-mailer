@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · outlook-mailer</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="brand" href="/">outlook-mailer</a>
+      <nav aria-label="Main">
+        <ul class="nav">
+        {% for path, label in nav %}
+          <li><a href="{{ path }}"{% if path == active %} aria-current="page"{% endif %}>{{ label }}</a></li>
+        {% endfor %}
+        </ul>
+      </nav>
+      <p class="who">
+      {% if request.state.user_email %}
+        Signed in as <strong>{{ request.state.user_email }}</strong>
+      {% else %}
+        <span class="warn">Access check off (AUTH_DISABLED=1)</span>
+      {% endif %}
+      </p>
+    </div>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -10,14 +10,20 @@ import sys
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
+from app import ui
+from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
+from app.security import CsrfSigner, Forbidden, RequestGuard, forbidden_response
 
 log = logging.getLogger("outlook_mailer")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, verifier: AccessVerifier | None = None) -> FastAPI:
     """Build the app. Settings are loaded from the environment when not given.
+
+    ``verifier`` overrides the Cloudflare Access verifier (tests).
 
     Raises ``ConfigError`` if the environment is invalid.
     """
@@ -33,10 +39,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="outlook-mailer", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
+    app.state.csrf_signer = CsrfSigner(settings.unsubscribe_secret)
+    app.add_middleware(RequestGuard, settings=settings, verifier=verifier)
+    app.add_exception_handler(Forbidden, forbidden_response)
 
-    @app.get("/healthz")
+    # HEAD too, for uptime monitors that probe with it.
+    @app.api_route("/healthz", methods=["GET", "HEAD"])
     def healthz() -> dict[str, bool]:
         return {"ok": True}
+
+    app.include_router(ui.router)
+    # Admin-only: the guard protects everything outside the public paths.
+    app.mount("/static", StaticFiles(directory=ui.STATIC_DIR), name="static")
 
     return app
 
