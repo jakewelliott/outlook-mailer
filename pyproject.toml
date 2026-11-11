@@ -20,7 +20,7 @@ dependencies = [
     "charset-normalizer>=3.5,<4",
     "markdown-it-py>=4.3,<5",
     "pyjwt[crypto]>=2.15,<3",
-    "cryptography>=50,<51",
+    "cryptography>=50,<52",
 ]
 
 [project.optional-dependencies]

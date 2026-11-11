@@ -48,6 +48,7 @@ invalid, and names each one that is wrong.
 | `PORT` | no | `8765` | HTTP port (1 to 65535). |
 | `TZ` | no | `America/New_York` | Time zone. |
 | `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. |
+| `FORWARDED_ALLOW_IPS` | no | `*` | Comma-separated IPs/CIDRs of the proxy (cloudflared) trusted for `X-Forwarded-For` / `X-Forwarded-Proto`. Tightening it to cloudflared's address or Docker subnet is recommended. Read by uvicorn (the container CMD), not by `config.py`. The client IP uvicorn reports is not trustworthy; see the Dockerfile comment. |
 
 ## Development
 
@@ -57,6 +58,24 @@ The tests run in a throwaway Python container, so nothing needs to be installed 
 docker run --rm -v "$PWD":/src -w /src python:3.12-slim \
   sh -c "pip install -q -e '.[dev]' && ruff check . && ruff format --check . && pytest -q"
 ```
+
+To build and run the image locally with the mock transport (writes `.eml` files instead of sending) and the
+Cloudflare Access check turned off:
+
+```sh
+docker build -t outlook-mailer:dev .
+mkdir -p /tmp/om-data && sudo chown 99:100 /tmp/om-data   # the container runs as uid 99, gid 100
+docker run --rm -p 8765:8765 -v /tmp/om-data:/data \
+  -e PUBLIC_BASE_URL=http://localhost:8765 \
+  -e UNSUBSCRIBE_SECRET=change-me-to-a-random-string-of-32-chars \
+  -e MAIL_TRANSPORT=mock -e AUTH_DISABLED=1 \
+  outlook-mailer:dev
+curl http://localhost:8765/healthz   # {"ok":true}
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs ruff and pytest on every pull request and push. Pushes to `main`
+and `v*` tags then build the image and push it to `ghcr.io/jakewelliott/outlook-mailer` (`latest` from `main`,
+`sha-<short>` always, `1.2.3` and `1.2` from tags). `compose.yaml` runs the published image on Unraid.
 
 ## Credits and licenses
 

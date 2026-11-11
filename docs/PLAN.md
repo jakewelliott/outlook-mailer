@@ -44,6 +44,7 @@ template that works in all major email clients. GitHub Actions builds the image 
 | `PORT` | no | `8765` | |
 | `TZ` | no | `America/New_York` | |
 | `LOG_LEVEL` | no | `INFO` | |
+| `FORWARDED_ALLOW_IPS` | no | `*` | Comma-separated IPs/CIDRs of the proxy (cloudflared) trusted for `X-Forwarded-For` / `X-Forwarded-Proto`. Tightening it to cloudflared's address or Docker subnet is recommended. Read by uvicorn (the container CMD), not by `config.py`. |
 
 The app refuses to start if a required variable is missing or invalid, and says which one.
 
@@ -108,6 +109,8 @@ The app refuses to start if a required variable is missing or invalid, and says 
   `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. Copies saved to Sent Items. If MIME headers are stripped,
   the footer link still satisfies CAN-SPAM.
 - Delegated `Mail.Send` + `User.Read` + `offline_access`, device code sign-in from the UI, authority `/consumers`.
+  The UI shows the user code and MSAL's `verification_uri` (normally microsoft.com/link for personal accounts),
+  never a hardcoded URL.
 - One recipient per message. Never CC/BCC.
 - Pacing `SEND_RATE_PER_MINUTE`, rolling `DAILY_SEND_CAP`, retries with backoff honouring `Retry-After` (max 3),
   stop the campaign on auth errors or N consecutive failures. Pause, resume, cancel. Resumes after restart with no
@@ -122,6 +125,10 @@ The app refuses to start if a required variable is missing or invalid, and says 
   people). `POST /u/<token>` (and the RFC 8058 one-click POST) records the opt-out and shows "You're unsubscribed".
 - Recording: append `email<TAB>timestamp` to `unsubscribed.txt` (skip if already present), with a file lock.
 - Rate-limited, no auth, no other data revealed. Must keep working at least 30 days after a send.
+- The rate limiter keys on the `CF-Connecting-IP` header (Cloudflare sets it and overwrites client values), falling
+  back to the socket peer address when it is absent. Never on `request.client.host` or `X-Forwarded-For`: with
+  `--proxy-headers` uvicorn takes the leftmost `X-Forwarded-For` entry, which the client controls. Only someone
+  hitting the LAN port directly could spoof `CF-Connecting-IP`, which is acceptable. Logs may show spoofed IPs.
 - Admin page shows the list and offers a download of the file.
 
 ## Stages

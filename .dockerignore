@@ -1,0 +1,11 @@
+# Allowlist: the image only needs pyproject.toml and the app package.
+*
+!pyproject.toml
+!app/
+
+# Never ship caches or local state, even from inside app/.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/*.egg-info

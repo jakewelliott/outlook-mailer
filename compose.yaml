@@ -1,0 +1,37 @@
+# outlook-mailer on Unraid. Put the values in a .env file next to this file (never commit it),
+# then: docker compose pull && docker compose up -d
+# See docs/PLAN.md / README "Configuration" for what each variable does.
+services:
+  outlook-mailer:
+    image: ghcr.io/jakewelliott/outlook-mailer:latest
+    container_name: outlook-mailer
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      # Must be owned by 99:100 (nobody:users): chown -R 99:100 /mnt/user/appdata/outlook-mailer
+      - /mnt/user/appdata/outlook-mailer:/data
+    environment:
+      # --- required ---
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL, e.g. https://the-calico-barn.jakewelliott.com}
+      UNSUBSCRIBE_SECRET: ${UNSUBSCRIBE_SECRET:?set UNSUBSCRIBE_SECRET to a random string of 32+ characters}
+      # Required when MAIL_TRANSPORT=graph (the default).
+      MS_CLIENT_ID: ${MS_CLIENT_ID:?set MS_CLIENT_ID to the Entra app (client) ID}
+      # Required unless AUTH_DISABLED=1.
+      CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:?set CF_ACCESS_TEAM_DOMAIN, e.g. yourteam.cloudflareaccess.com}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD:?set CF_ACCESS_AUD to the Access application AUD tag}
+
+      # --- optional (defaults shown) ---
+      # TOKEN_CACHE_KEY: ${TOKEN_CACHE_KEY}   # Fernet key; encrypts the Microsoft token cache. Recommended.
+      # MS_AUTHORITY: https://login.microsoftonline.com/consumers
+      # AUTH_DISABLED: "0"                    # 1 = no Access check on admin pages. Local testing only.
+      # MAIL_TRANSPORT: graph                 # graph | mock (mock writes .eml files to /data/outbox)
+      # SEND_RATE_PER_MINUTE: "6"
+      # DAILY_SEND_CAP: "250"
+      # MAX_RECIPIENTS: "2000"
+      # MAX_UPLOAD_MB: "5"
+      # DATA_DIR: /data
+      # PORT: "8765"                          # if changed, change the port mapping too
+      # TZ: America/New_York
+      # LOG_LEVEL: INFO
+      # FORWARDED_ALLOW_IPS: "*"              # peers trusted for X-Forwarded-*; set to cloudflared's IP to tighten
