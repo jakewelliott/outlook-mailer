@@ -21,6 +21,26 @@ MIGRATIONS: list[str] = [
         status_values TEXT
     );
     """,
+    # 2: the message written for a draft (compose page), and app-wide settings (key/value)
+    """
+    CREATE TABLE draft_content (
+        draft_id TEXT PRIMARY KEY REFERENCES drafts(id) ON DELETE CASCADE,
+        updated_at TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        preheader TEXT NOT NULL,
+        body TEXT NOT NULL,
+        business_name TEXT NOT NULL,
+        postal_address TEXT NOT NULL,
+        is_advertisement INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        headline TEXT NOT NULL,
+        tagline TEXT NOT NULL
+    );
+    CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    """,
 ]
 
 

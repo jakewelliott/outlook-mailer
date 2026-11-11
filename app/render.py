@@ -201,12 +201,18 @@ def render_email(
     headline: str = DEFAULT_HEADLINE,
     tagline: str = DEFAULT_TAGLINE,
     divider: bool = True,
+    force_dark: bool = False,
 ) -> str:
     """The complete HTML document for one recipient.
 
     ``prepared_body_html`` must be the trusted fragment from ``content.PreparedBody`` (already
     escaped and merged); it is inserted as-is. All other values are plain text and are escaped.
     ``theme`` should be the one the body was prepared with, so colours match.
+
+    ``force_dark`` is for the admin preview only, never for sending: a page can't make an iframe
+    match ``prefers-color-scheme: dark``, so the dark-mode rules are added once more outside the
+    media query (and ``color-scheme`` is set to ``dark``). It shows roughly what Apple Mail and
+    iOS do; Gmail and Outlook apply their own colour changes, see docs/email-qa.md.
     """
     html = _env.get_template(TEMPLATE).render(
         body=Markup(prepared_body_html),
@@ -216,6 +222,7 @@ def render_email(
         headline=headline,
         tagline=tagline,
         divider=divider,
+        force_dark=force_dark,
         business_name=footer.business_name,
         address_lines=footer.address_lines,
         is_advertisement=footer.is_advertisement,

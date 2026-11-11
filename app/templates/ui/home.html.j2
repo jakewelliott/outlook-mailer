@@ -25,9 +25,9 @@
   </ol>
 </section>
 
-<section class="card">
+<section class="card" id="merge-fields">
   <h2>Merge fields</h2>
-  <p>These are replaced for each recipient, in the subject and the body.</p>
+  <p>These are replaced for each recipient, in the subject, the preview text and the body.</p>
   <table class="ref">
     <thead><tr><th>Write</th><th>Becomes</th></tr></thead>
     <tbody>
@@ -44,7 +44,7 @@
     {% raw %}<code>{{</code>{% endraw %}, is an error and blocks sending.</p>
 </section>
 
-<section class="card">
+<section class="card" id="markdown">
   <h2>Formatting the body (Markdown)</h2>
   <table class="ref">
     <thead><tr><th>Write</th><th>Result</th></tr></thead>
@@ -65,7 +65,8 @@
     ({% raw %}<code>[Your offer](https://example.com/?email={{email}})</code>{% endraw %}) or as
     {% raw %}<code>[Write to us](mailto:{{email}})</code>{% endraw %}. HTML typed into the body is shown as
     text, not used. Pictures, tables, code and quotes aren't supported, and plain web addresses are not
-    turned into links (most mail apps do that themselves).</p>
+    turned into links (most mail apps do that themselves). A link title, as in
+    <code>[shop](https://example.com "title")</code>, is ignored.</p>
 </section>
 
 <section class="card">

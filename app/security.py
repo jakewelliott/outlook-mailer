@@ -40,10 +40,7 @@ CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
 _NONCE_RE = re.compile(r"[A-Za-z0-9_-]{43}")  # secrets.token_urlsafe(32)
 
-# Forward notes for later stages:
-# - Stage 8: an ``<iframe sandbox srcdoc>`` preview inherits this CSP from the parent page, so the
-#   email HTML's inline styles would be blocked. That frame needs a per-route CSP allowing inline
-#   styles, or the preview must be served from its own route with its own CSP.
+# Forward note for later stages:
 # - Stage 13: public pages (``/u/*``) can't use ``/static/`` (admin-only), so they need their own
 #   minimal styling and CSP.
 CSP = (
@@ -55,6 +52,29 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
+# The rendered email preview (stage 8) has inline styles and loads images from
+# ``PUBLIC_BASE_URL/img/``, so it is served from its own admin route and shown in an
+# ``<iframe sandbox>`` (no scripts, opaque origin). Only responses whose route called
+# ``use_email_preview_headers`` get this policy instead of ``CSP``; it allows inline styles and
+# those images, nothing else, and framing by this app only. Everything else keeps ``CSP`` and
+# ``X-Frame-Options: DENY``.
+EMAIL_PREVIEW = "email_preview"
+_HEADER_PROFILE = "header_profile"
+
+
+def email_preview_csp(image_origin: str | None) -> str:
+    images = "'self'" + (f" {image_origin}" if image_origin else "")
+    return (
+        f"default-src 'none'; style-src 'unsafe-inline'; img-src {images}; base-uri 'none'; "
+        "form-action 'none'; frame-ancestors 'self'"
+    )
+
+
+def use_email_preview_headers(request: Request) -> None:
+    """Call from an admin route that returns a rendered email to be shown in the preview frame."""
+    setattr(request.state, _HEADER_PROFILE, EMAIL_PREVIEW)
+
+
 # Admin pages must use ``same-origin``, not ``no-referrer``: under ``no-referrer`` Chromium and
 # Firefox send ``Origin: null`` and no Referer on same-origin form POSTs, so the Origin check
 # would reject every admin form. ``same-origin`` still sends nothing to other sites. Public paths
@@ -121,6 +141,10 @@ class RequestGuard:
                 settings.cf_access_team_domain, settings.cf_access_aud
             )
         self.allowed_origin = _origin(settings.public_base_url)
+        self.preview_headers = {
+            "Content-Security-Policy": email_preview_csp(self.allowed_origin),
+            "X-Frame-Options": "SAMEORIGIN",
+        }
         self.secure_cookie = settings.public_base_url.startswith("https://") and not (
             settings.auth_disabled
         )
@@ -141,6 +165,10 @@ class RequestGuard:
                 headers = MutableHeaders(scope=message)
                 for name, value in SECURITY_HEADERS.items():
                     headers[name] = value
+                # Set by the route (``use_email_preview_headers``) via ``request.state``, which
+                # lives in the scope; public paths never get it.
+                if admin and scope.get("state", {}).get(_HEADER_PROFILE) == EMAIL_PREVIEW:
+                    headers.update(self.preview_headers)
                 headers["Referrer-Policy"] = (
                     ADMIN_REFERRER_POLICY if admin else PUBLIC_REFERRER_POLICY
                 )

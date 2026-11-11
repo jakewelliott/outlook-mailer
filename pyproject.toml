@@ -16,7 +16,8 @@ dependencies = [
     "msal>=1.39,<2",
     "httpx>=0.28.1,<1",
     "email-validator>=2.3,<3",
-    "css-inline>=0.23,<1",
+    # Pinned to a minor version: tests/snapshots/christmas.html depends on its exact output.
+    "css-inline>=0.23,<0.24",
     "charset-normalizer>=3.5,<4",
     "markdown-it-py>=4.3,<5",
     "pyjwt[crypto]>=2.15,<3",

@@ -7,6 +7,8 @@ counts: when in doubt, don't email someone who may have opted out.
 
 from pathlib import Path
 
+from app.emails import normalise_key
+
 FILENAME = "unsubscribed.txt"
 
 
@@ -14,7 +16,7 @@ def parse_unsubscribed(text: str) -> frozenset[str]:
     """Lower-case addresses found in the file's text."""
     emails: set[str] = set()
     for line in text.splitlines():
-        email = line.split("\t", 1)[0].strip().lower()
+        email = normalise_key(line.split("\t", 1)[0])
         local, at, domain = email.partition("@")
         if at and local and domain and " " not in email:
             emails.add(email)

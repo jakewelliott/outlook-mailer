@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from email_validator import EmailNotValidError, validate_email
 
 from app.csv_ingest import ParsedCsv
+from app.emails import normalise_key
 
 # Row categories. Each row with a problem gets exactly one of the first five (checked in this
 # order); ``missing_first_name`` is a warning and the row is still sent.
@@ -209,7 +210,7 @@ def validate_rows(
         except EmailNotValidError as exc:
             problem(INVALID_EMAIL, str(exc))
             continue
-        key = email.lower()
+        key = normalise_key(email)
         if key in first_row:
             problem(DUPLICATE, f"Same address as row {first_row[key]}.")
             continue

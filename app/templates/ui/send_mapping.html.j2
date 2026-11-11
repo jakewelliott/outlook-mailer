@@ -35,7 +35,7 @@
     {{ column_select("email", "Email address", true) }}
     {{ column_select("first_name", "First name", true) }}
     {% call column_select("status", "Email subscription status", false) %}
-      <button type="submit" name="action" value="refresh" class="secondary" id="status-refresh">Show values</button>
+      <button type="submit" name="action" value="refresh" class="secondary" id="status-refresh" formnovalidate>Show values</button>
     {% endcall %}
     <p class="muted">Leave the status column on <em>none</em> if your file has no such column: everyone on the
       list is then sent the email (except addresses that have unsubscribed).</p>

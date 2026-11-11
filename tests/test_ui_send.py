@@ -1,13 +1,17 @@
+import asyncio
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from app.config import Settings, load_settings
 from app.main import create_app
+from app.ui_send import UploadTooLarge, limit_upload_size
 
 BASE = "https://mail.example.com"
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -311,3 +315,26 @@ def test_deleted_csv(client: TestClient, data_dir: Path) -> None:
     draft = upload_ok(client)
     (data_dir / "uploads" / f"{draft}.csv").unlink()
     assert client.get(f"/send/{draft}/mapping").status_code == 410
+
+
+@pytest.mark.parametrize(
+    ("length", "too_large"),
+    [
+        (b"", False),
+        (b"100", False),
+        (b"\xb2", False),  # latin-1 "²": str.isdigit() is True but int() fails
+        (b"1\xb9", False),
+        (b"99999999999", True),
+        (b"9" * 30, True),
+    ],
+)
+def test_upload_size_guard_reads_only_ascii_digits(
+    app_settings: Settings, length: bytes, too_large: bool
+) -> None:
+    app = SimpleNamespace(state=SimpleNamespace(settings=app_settings))
+    request = Request({"type": "http", "headers": [(b"content-length", length)], "app": app})
+    if too_large:
+        with pytest.raises(UploadTooLarge):
+            asyncio.run(limit_upload_size(request))
+    else:
+        asyncio.run(limit_upload_size(request))

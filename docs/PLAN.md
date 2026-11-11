@@ -57,7 +57,7 @@ The app refuses to start if a required variable is missing or invalid, and says 
   (RS256, keys from `https://<CF_ACCESS_TEAM_DOMAIN>/cdn-cgi/access/certs`, cached, `aud` = `CF_ACCESS_AUD`,
   `iss` = `https://<CF_ACCESS_TEAM_DOMAIN>`, `exp` checked). Missing or invalid gives 403. This also blocks anyone
   hitting the LAN port directly. No separate app login.
-- CSRF token on all admin POSTs, plus an Origin check. CSP `default-src 'self'`; previews in `<iframe sandbox srcdoc>`.
+- CSRF token on all admin POSTs, plus an Origin check. CSP `default-src 'self'`; the email preview is served from its own admin route with a narrow CSP (inline styles and email images only) and shown in an `<iframe sandbox>`.
   Admin responses send `Referrer-Policy: same-origin` (public paths `no-referrer`); `Origin: null` is rejected.
 
 ## CSV and mapping

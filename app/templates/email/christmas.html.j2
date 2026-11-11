@@ -11,6 +11,17 @@
   Images: the header photo is a background (bgcolor + live text, so it reads with images off;
   VML for classic Outlook), the holly divider is an <img> with alt, width and height.
 -#}
+{#- The dark-mode colours, used in the prefers-color-scheme query and, for the admin dark
+    preview only (force_dark), once more outside it. -#}
+{% macro dark_rules() %}
+  .email-bg { background: {{ dark.page|css }} !important; background-color: {{ dark.page|css }} !important; }
+  .card-bg { background: {{ dark.card|css }} !important; background-color: {{ dark.card|css }} !important; }
+  .body-copy p, .body-copy ul, .body-copy ol, .body-copy li, .dark-text { color: {{ dark.text|css }} !important; }
+  .body-copy h1, .body-copy h2 { color: {{ dark.heading|css }} !important; }
+  .body-copy a { color: {{ dark.link|css }} !important; }
+  .footer-bg { background: {{ dark.footer|css }} !important; background-color: {{ dark.footer|css }} !important; }
+  .footer-text, .footer-text p, .footer-text a { color: {{ dark.footer_text|css }} !important; }
+{%- endmacro %}
 <!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -19,8 +30,12 @@
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="x-apple-disable-message-reformatting">
 <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no">
+{% if force_dark %}
+<meta name="color-scheme" content="dark">
+{% else %}
 <meta name="color-scheme" content="light dark">
 <meta name="supported-color-schemes" content="light dark">
+{% endif %}
 <title>{{ subject }}</title>
 <!--[if gte mso 9]>
 <xml>
@@ -56,13 +71,7 @@ img.g-img + div { display: none !important; }
   .footer-pad { padding: 24px 22px !important; }
 }
 @media (prefers-color-scheme: dark) {
-  .email-bg { background: {{ dark.page|css }} !important; background-color: {{ dark.page|css }} !important; }
-  .card-bg { background: {{ dark.card|css }} !important; background-color: {{ dark.card|css }} !important; }
-  .body-copy p, .body-copy ul, .body-copy ol, .body-copy li, .dark-text { color: {{ dark.text|css }} !important; }
-  .body-copy h1, .body-copy h2 { color: {{ dark.heading|css }} !important; }
-  .body-copy a { color: {{ dark.link|css }} !important; }
-  .footer-bg { background: {{ dark.footer|css }} !important; background-color: {{ dark.footer|css }} !important; }
-  .footer-text, .footer-text p, .footer-text a { color: {{ dark.footer_text|css }} !important; }
+{{ dark_rules() }}
 }
 </style>
 <style data-css-inline="ignore">
@@ -77,6 +86,12 @@ img.g-img + div { display: none !important; }
 [data-ogsb] .footer-bg { background-color: {{ dark.footer|css }} !important; }
 [data-ogsb] .hero { background-color: {{ c.pine_dark|css }} !important; }
 </style>
+{% if force_dark %}
+<style data-css-inline="ignore">
+:root { color-scheme: dark; }
+{{ dark_rules() }}
+</style>
+{% endif %}
 <style>
 .hero-name { font-family: {{ theme.body_font|css }}; font-size: 13px; line-height: 18px; letter-spacing: 3px; text-transform: uppercase; font-weight: bold; color: {{ c.gold_light|css }}; margin: 0 0 10px; }
 .hero-headline { font-family: {{ theme.heading_font|css }}; font-size: 44px; line-height: 50px; font-weight: normal; color: {{ c.cream|css }}; margin: 0; }

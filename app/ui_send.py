@@ -1,10 +1,13 @@
 """New send, steps 1 to 3: upload the CSV, map the columns, see the validation report.
 
+Step 4 (compose and preview) is in ``ui_compose``.
+
 Every step works without JavaScript. Choosing a different status column needs a round trip to
 list its values: the "Show values" button (pressed automatically by ``app.js`` when the status
 dropdown changes) re-renders the mapping page without saving.
 """
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -77,7 +80,11 @@ def _limit_bytes(request: Request) -> int:
 async def limit_upload_size(request: Request) -> None:
     """Refuse an oversized upload from its Content-Length, before the body is parsed."""
     length = request.headers.get("content-length", "")
-    if length.isdigit() and int(length) > _limit_bytes(request) + FORM_OVERHEAD_BYTES:
+    # ASCII digits only (str.isdigit() accepts "²", which int() rejects). Over 18 digits is far
+    # past any limit and would be slow or refused by int().
+    if re.fullmatch(r"\d+", length, re.ASCII) and (
+        len(length) > 18 or int(length) > _limit_bytes(request) + FORM_OVERHEAD_BYTES
+    ):
         raise UploadTooLarge
 
 
@@ -277,7 +284,8 @@ async def mapping_save(request: Request, draft_id: str) -> Response:
 # --- Step 3: validation report -----------------------------------------------------------------
 
 
-def _report(request: Request, draft_id: str) -> tuple[Draft, ValidationReport] | Response:
+def load_report(request: Request, draft_id: str) -> tuple[Draft, ValidationReport] | Response:
+    """The draft and its validation report, or an error page / a redirect to the mapping."""
     loaded = _load(request, draft_id)
     if isinstance(loaded, Response):
         return loaded
@@ -294,7 +302,7 @@ def _report(request: Request, draft_id: str) -> tuple[Draft, ValidationReport] |
 
 @router.get("/send/{draft_id}/report")
 def report_page(request: Request, draft_id: str) -> Response:
-    result = _report(request, draft_id)
+    result = load_report(request, draft_id)
     if isinstance(result, Response):
         return result
     draft, report = result
@@ -312,7 +320,7 @@ def report_page(request: Request, draft_id: str) -> Response:
 
 @router.get("/send/{draft_id}/issues.csv")
 def issues_download(request: Request, draft_id: str) -> Response:
-    result = _report(request, draft_id)
+    result = load_report(request, draft_id)
     if isinstance(result, Response):
         return result
     draft, report = result
@@ -324,10 +332,3 @@ def issues_download(request: Request, draft_id: str) -> Response:
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{safe_stem[:60]}-issues.csv"'},
     )
-
-
-@router.get("/send/{draft_id}/compose")
-def compose_placeholder(request: Request, draft_id: str) -> Response:
-    if drafts.get_draft(_db(request), draft_id) is None:
-        return _not_found(request)
-    return _page(request, "ui/placeholder.html.j2", title="Compose")

@@ -109,8 +109,10 @@ def links(html: str) -> dict[str, str | None]:
     found: dict[str, str | None] = {}
 
     class P(HTMLParser):
-        href: str | None = None
-        buf: list[str] = []  # noqa: RUF012
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.href: str | None = None
+            self.buf: list[str] = []
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
             if tag == "a":
@@ -125,7 +127,7 @@ def links(html: str) -> dict[str, str | None]:
                 found["".join(self.buf).strip()] = self.href
                 self.href = None
 
-    P(convert_charrefs=True).feed(html)
+    P().feed(html)
     return found
 
 
@@ -239,7 +241,7 @@ def test_no_preheader_block_when_blank() -> None:
         unsubscribe_url=UNSUB,
         public_base_url=BASE,
     )
-    assert "‌" not in out
+    assert "\u200c" not in out
 
 
 # --- footer ----------------------------------------------------------------------------------

@@ -1,0 +1,152 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "New send: compose" %}
+{% macro field_errors(name) %}
+{% if errors.get(name) %}
+<ul class="field-error" id="{{ name }}-error">
+{% for e in errors[name] %}<li>{{ e }}</li>{% endfor %}
+</ul>
+{% endif %}
+{% endmacro %}
+{% macro described(name, hint=false) -%}
+{%- set ids = [] -%}
+{%- if hint %}{% set _ = ids.append(name ~ "-hint") %}{% endif -%}
+{%- if errors.get(name) %}{% set _ = ids.append(name ~ "-error") %}{% endif -%}
+{%- if ids %} aria-describedby="{{ ids | join(' ') }}"{% endif -%}
+{%- if errors.get(name) %} aria-invalid="true"{% endif -%}
+{%- endmacro %}
+{% block content %}
+<h1>New send</h1>
+<p class="muted">Step 4: write the message and check the preview. {{ report.eligible | length }} recipients.
+  <a href="/send/{{ draft_id }}/report">Back to the list check</a> ·
+  <a href="/#markdown">Formatting and merge fields help</a></p>
+
+{% if error_count %}
+<div class="error" role="alert">
+  <p>Not saved: {{ error_count }} problem{{ "s" if error_count != 1 else "" }} to fix (shown next to each field).</p>
+</div>
+{% elif just_saved %}
+<p class="ok" role="status">Saved. The preview below shows this version.</p>
+{% endif %}
+
+<form method="post" action="/send/{{ draft_id }}/compose" id="compose-form">
+  {{ csrf_field(request) }}
+  <input type="hidden" name="r" value="{{ choice }}" id="compose-r">
+  <input type="hidden" name="scheme" value="{{ scheme }}" id="compose-scheme">
+
+  <section class="card">
+    <h2>Message</h2>
+    <p>
+      <label for="subject">Subject <span class="req">(required)</span></label><br>
+      <input type="text" id="subject" name="subject" value="{{ c.subject }}" maxlength="250" required class="wide"{{ described("subject") }}>
+      {{ field_errors("subject") }}
+    </p>
+    <p>
+      <label for="preheader">Preview text <span class="req">(optional)</span></label><br>
+      <input type="text" id="preheader" name="preheader" value="{{ c.preheader }}" maxlength="250" class="wide"{{ described("preheader", true) }}>
+      <span class="hint" id="preheader-hint">Shown after the subject in most inboxes. Merge fields work here too.</span>
+      {{ field_errors("preheader") }}
+    </p>
+    <p>
+      <label for="body">Message <span class="req">(required, Markdown)</span></label><br>
+      <textarea id="body" name="body" rows="16" class="wide mono" required{{ described("body", true) }}>{{ c.body }}</textarea>
+      <span class="hint" id="body-hint">{% raw %}<code>**bold**</code>, <code>*italic*</code>, <code>++underline++</code>,
+        <code>[text](https://…)</code>, <code>- list</code>, <code># Heading</code>, <code>{{first_name|Friend}}</code>.{% endraw %}
+        <a href="/#markdown">All formatting</a> · <a href="/#merge-fields">Merge fields</a></span>
+      {{ field_errors("body") }}
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Header</h2>
+    <p>
+      <label for="headline">Headline <span class="req">(required)</span></label><br>
+      <input type="text" id="headline" name="headline" value="{{ c.headline }}" maxlength="60" required class="wide"{{ described("headline") }}>
+      {{ field_errors("headline") }}
+    </p>
+    <p>
+      <label for="tagline">Tagline <span class="req">(optional)</span></label><br>
+      <input type="text" id="tagline" name="tagline" value="{{ c.tagline }}" maxlength="100" class="wide"{{ described("tagline") }}>
+      {{ field_errors("tagline") }}
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Footer</h2>
+    <p class="muted">Required by the law on commercial email (CAN-SPAM). The unsubscribe link is added
+      automatically. These are remembered for your next send.</p>
+    <p>
+      <label for="business_name">Business or sender name <span class="req">(required)</span></label><br>
+      <input type="text" id="business_name" name="business_name" value="{{ c.business_name }}" maxlength="100" required class="wide"{{ described("business_name") }}>
+      {{ field_errors("business_name") }}
+    </p>
+    <p>
+      <label for="postal_address">Postal address <span class="req">(required)</span></label><br>
+      <textarea id="postal_address" name="postal_address" rows="4" class="wide" required{{ described("postal_address", true) }}>{{ c.postal_address }}</textarea>
+      <span class="hint" id="postal_address-hint">A street address or PO box, one line per line (up to 6 lines).</span>
+      {{ field_errors("postal_address") }}
+    </p>
+    <p>
+      <input type="checkbox" id="is_advertisement" name="is_advertisement" value="1"{% if c.is_advertisement %} checked{% endif %}>
+      <label for="is_advertisement">Say “This message is an advertisement.”</label>
+    </p>
+    <p>
+      <label for="reason">Why you're receiving this <span class="req">(optional)</span></label><br>
+      <textarea id="reason" name="reason" rows="2" class="wide"{{ described("reason", true) }}>{{ c.reason }}</textarea>
+      <span class="hint" id="reason-hint">Leave blank to use: “{{ default_reason }}”</span>
+      {{ field_errors("reason") }}
+    </p>
+  </section>
+
+  <p><button type="submit" id="compose-save">Save and update preview</button>
+    <span class="muted" id="dirty-note" hidden>Unsaved changes: the preview shows the last saved version.</span></p>
+</form>
+
+<section class="card" id="preview">
+  <h2>Preview</h2>
+  {% if saved is none %}
+  <p class="muted">Save the message to see the preview.</p>
+  {% elif preview_errors %}
+  <div class="error" role="alert">
+    <p>The saved message can't be previewed:</p>
+    <ul>
+    {% for msgs in preview_errors.values() %}{% for e in msgs %}<li>{{ e }}</li>{% endfor %}{% endfor %}
+    </ul>
+  </div>
+  {% else %}
+  <form method="get" action="/send/{{ draft_id }}/compose#preview" id="preview-form" class="inline-form"
+    data-html-base="/send/{{ draft_id }}/preview.html" data-text-base="/send/{{ draft_id }}/preview.txt">
+    <label for="preview-r">Recipient</label>
+    <select id="preview-r" name="r">
+    {% for p in choices %}
+      <option value="{{ loop.index0 }}"{% if choice == loop.index0 | string %} selected{% endif %}>Row {{ p.row }}: {{ p.first_name or "(no first name)" }} &lt;{{ p.email }}&gt;</option>
+    {% endfor %}
+      <option value="{{ sample }}"{% if choice == sample %} selected{% endif %}>Sample: no first name &lt;{{ sample_email }}&gt; (shows fallbacks)</option>
+    </select>
+    <label for="preview-scheme">Colours</label>
+    <select id="preview-scheme" name="scheme">
+      <option value="light"{% if scheme == "light" %} selected{% endif %}>Light</option>
+      <option value="dark"{% if scheme == "dark" %} selected{% endif %}>Dark</option>
+    </select>
+    <button type="submit" class="secondary" id="preview-show">Show</button>
+  </form>
+  {% if choices | length < report.eligible | length %}
+  <p class="muted">The first {{ choices | length }} of {{ report.eligible | length }} recipients are listed.</p>
+  {% endif %}
+
+  {% set size_msg = size.message() %}
+  <p class="{{ 'error' if size.too_large else ('warn-box' if size.warn else 'muted') }}" id="size"{% if size_msg %} role="alert"{% endif %}>
+    Email size: {{ "%.0f" | format(size.kb) }} KB (for the longest name and address on the list; Gmail cuts off
+    emails over {{ size_limit_kb }} KB).{% if size_msg %} {{ size_msg }}{% endif %}</p>
+
+  <h3>Email</h3>
+  <iframe id="preview-html" class="preview-frame" sandbox title="Email preview"
+    src="/send/{{ draft_id }}/preview.html?{{ query }}"></iframe>
+  <p class="muted">Dark is an approximation (like Apple Mail). Gmail and Outlook change colours their own way;
+    check real mail apps with a test send.</p>
+
+  <h3>Subject and plain-text version</h3>
+  <iframe id="preview-text" class="preview-frame text" sandbox title="Plain-text version"
+    src="/send/{{ draft_id }}/preview.txt?{{ query }}"></iframe>
+  {% endif %}
+</section>
+{% endblock %}

@@ -7,8 +7,9 @@ with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Do
 
 > **Status: under construction.** So far: configuration, `/healthz`, the Docker image, the admin UI shell with
 > the Cloudflare Access check and the help page, CSV upload with column mapping and the validation report,
-> merge fields, the Markdown-to-email conversion of the message body, and the Christmas email template with its
-> footer and hosted images.
+> merge fields, the Markdown-to-email conversion of the message body, the Christmas email template with its
+> footer and hosted images, and the compose page with saved footer settings and a light/dark preview. Sending
+> comes next.
 > See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
@@ -65,6 +66,22 @@ mode, and reads fine with images turned off. The plain-text version ends with th
 the app at `/img/...` (public, no sign-in) and are public domain or the project's own work; see
 `app/static/email-img/CREDITS.md`. `docs/sample-email.html` shows a rendered example and `docs/email-qa.md` is the
 checklist for testing it in real mail apps.
+
+### Compose and preview
+
+After the list check, **Continue to compose** opens the compose page: the subject and an optional preview text
+(both can use merge fields), the Markdown message, the header headline and tagline (default "Merry Christmas" /
+"and a Happy New Year"), and the footer: business or sender name, postal address, the advertisement notice
+(on by default) and an optional "why you're receiving this" sentence. **Save** checks everything and shows each
+problem next to its field, keeping what you typed. The message is saved with the upload; the footer and header are
+also remembered app-wide, so the next send starts with them filled in. Below the form, the preview shows the last
+saved version exactly as it will be sent (same rendering, real unsubscribe link) for any of the first 50
+recipients or for a sample with no first name (to check fallbacks), in light or dark colours, plus the subject
+line and the plain-text version. Dark is an approximation of Apple Mail's dark mode; other mail apps change colours
+their own way. The page also shows the email's size for the longest name and address on the list: it warns above
+90 KB and refuses to save above 102 KB, where Gmail cuts messages off and would hide the unsubscribe link.
+Unsubscribe links are `PUBLIC_BASE_URL/u/<token>`, where the token is the address (base64url) plus a truncated
+HMAC-SHA256 made with `UNSUBSCRIBE_SECRET` (`app/unsubscribe_tokens.py`).
 
 ## Decisions
 

@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from starlette.types import Scope
 
-from app import render, ui, ui_send
+from app import render, ui, ui_compose, ui_send
 from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
 from app.db import Database
@@ -87,6 +87,7 @@ def create_app(settings: Settings | None = None, verifier: AccessVerifier | None
     app.include_router(ui.router)
     app.include_router(ui_send.upload_router)
     app.include_router(ui_send.router)
+    app.include_router(ui_compose.router)
     # Admin-only: the guard protects everything outside the public paths.
     app.mount("/static", StaticFiles(directory=ui.STATIC_DIR), name="static")
     # Public: images linked from sent emails (the guard treats /img/* as public).
