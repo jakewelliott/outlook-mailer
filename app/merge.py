@@ -12,20 +12,21 @@ placeholders. Rules:
   ``{%`` (template tags) is reported too. Single braces and a stray ``}}`` are ordinary text.
 - Rendering is a single pass, so a value that itself contains ``{{email}}`` is not expanded.
 
-Markdown (stage 6): first call ``validate`` on the raw body exactly as typed, before ``protect``, so
-error messages quote the user's own text (``render`` validating again after Markdown is only a
-backstop). Then convert ``protect(body).text`` to HTML/plain text, call ``restore`` on each result,
-and ``render`` per recipient. The tokens are plain letters and digits, so Markdown can't
-split, emphasise, escape or percent-encode the placeholders (it would otherwise escape ``&`` in a
-fallback twice, URL-encode ``{{`` in links and split ``|`` in tables). Placeholders in link targets
-need extra checks and URL encoding in stage 6; see "Merge fields in the Markdown body" in
-docs/PLAN.md.
+Markdown (``app/content.py``): ``validate`` the raw body exactly as typed, before ``protect``, so
+error messages quote the user's own text. Then convert ``protect(body).text``. The tokens are plain
+letters and digits, so Markdown can't split, emphasise, escape or percent-encode the placeholders
+(it would otherwise escape ``&`` in a fallback twice, URL-encode ``{{`` in links and split ``|`` in
+tables). ``content`` then splits the output at the tokens (``Protected.tokens``) and renders only
+those placeholders per recipient, with ``mode="url"`` (percent-encoded, then HTML-escaped) inside
+link targets. ``restore`` + ``render`` on a whole converted text also works where no URL context
+is involved. See "Merge fields in the Markdown body" in docs/PLAN.md.
 """
 
 import html
 import re
 import secrets
 import unicodedata
+import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
@@ -33,7 +34,7 @@ from typing import Literal
 from app.recipients import Recipient
 
 FIELDS = ("first_name", "email")
-Mode = Literal["html", "text", "subject"]
+Mode = Literal["html", "text", "subject", "url"]
 
 _FIELD_RE = re.compile(r"\{\{[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\|([^{}|\r\n]*))?\}\}")
 _HINT = "write {{first_name}}, {{email}} or {{first_name|Fallback}}"
@@ -41,6 +42,10 @@ _SNIPPET_WINDOW = 80
 # Bidi embeddings/overrides/isolates and invisible characters, removed from subjects. ZWNJ (U+200C)
 # and ZWJ (U+200D) stay: Persian, Indic scripts and emoji sequences need them.
 _SUBJECT_STRIP = re.compile("[\u202a-\u202e\u2066-\u2069\u200b\u2060\ufeff]")
+# Characters left as they are in ``url`` mode, besides letters, digits and ``_.-~``. Only ``@``, so
+# addresses stay readable in ``mailto:``; it is harmless because placeholders may only come after
+# the host (see app/content.py). Everything else, ``/ ? # & = + %`` and spaces included, is encoded.
+_URL_SAFE = "@"
 
 
 class MergeError(ValueError):
@@ -131,9 +136,11 @@ def render(text: str, values: Mapping[str, str | None], *, mode: Mode) -> str:
     In every mode, control characters other than tab and line feed are removed from values (not
     from the text around them). ``html`` then escapes values and fallbacks, ``text`` inserts them
     as they are, and ``subject`` also removes control, bidi and invisible characters (keeping ZWJ
-    and ZWNJ) and collapses whitespace in the whole result.
+    and ZWNJ) and collapses whitespace in the whole result. ``url`` percent-encodes values and
+    fallbacks (UTF-8) for use inside a link target; it does not HTML-escape, so escape the whole
+    URL when putting it in an attribute.
     """
-    if mode not in ("html", "text", "subject"):
+    if mode not in ("html", "text", "subject", "url"):
         raise ValueError(f"Unknown mode {mode!r}")
     if errors := validate(text):
         raise MergeError(errors)
@@ -143,7 +150,11 @@ def render(text: str, values: Mapping[str, str | None], *, mode: Mode) -> str:
         value = _clean_value(values.get(p.name) or "").strip()
         if not value and p.fallback is not None:
             value = p.fallback
-        out += [text[pos : p.start], html.escape(value) if mode == "html" else value]
+        if mode == "html":
+            value = html.escape(value)
+        elif mode == "url":
+            value = urllib.parse.quote(value, safe=_URL_SAFE)
+        out += [text[pos : p.start], value]
         pos = p.end
     out.append(text[pos:])
     result = "".join(out)

@@ -56,10 +56,16 @@
       <tr><td><code>[our shop](https://example.com)</code></td><td>a link (http, https or mailto only)</td></tr>
       <tr><td><code>- item</code> or <code>1. item</code></td><td>bullet or numbered list</td></tr>
       <tr><td><code># Heading</code>, <code>## Smaller heading</code></td><td>headings</td></tr>
+      <tr><td>Enter</td><td>a new line</td></tr>
       <tr><td>a blank line</td><td>a new paragraph</td></tr>
+      <tr><td><code>\*</code>, <code>\+</code>, <code>\#</code></td><td>the character itself, not formatting</td></tr>
     </tbody>
   </table>
-  <p class="muted">HTML typed into the body is shown as text, not used.</p>
+  <p class="muted">A merge field can go in a link only after a fixed web address
+    ({% raw %}<code>[Your offer](https://example.com/?email={{email}})</code>{% endraw %}) or as
+    {% raw %}<code>[Write to us](mailto:{{email}})</code>{% endraw %}. HTML typed into the body is shown as
+    text, not used. Pictures, tables, code and quotes aren't supported, and plain web addresses are not
+    turned into links (most mail apps do that themselves).</p>
 </section>
 
 <section class="card">

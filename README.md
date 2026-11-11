@@ -6,7 +6,8 @@ template, send yourself a test, then run a rate-limited bulk send through Micros
 with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Docker container.
 
 > **Status: under construction.** So far: configuration, `/healthz`, the Docker image, the admin UI shell with
-> the Cloudflare Access check and the help page, and CSV upload with column mapping and the validation report.
+> the Cloudflare Access check and the help page, CSV upload with column mapping and the validation report,
+> merge fields, and the Markdown-to-email conversion of the message body.
 > See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
@@ -42,6 +43,15 @@ row is kept), skipped by status, or already in `unsubscribed.txt`. A missing fir
 merge field fallback is used). The full list of problems can be downloaded as a CSV. The uploaded file is kept in
 `DATA_DIR/uploads/` (readable only by the app) until the campaign ends. Limits: `MAX_UPLOAD_MB` and
 `MAX_RECIPIENTS`.
+
+### Message body and merge fields
+
+The subject and body can use `{{first_name}}`, `{{email}}` and `{{first_name|Fallback}}`; an unknown or malformed
+field blocks sending. The body is Markdown: `**bold**`, `*italic*`, `~~strike~~`, `++underline++`, `[text](url)`,
+bullet and numbered lists, `#` and `##` headings, a blank line for a new paragraph and Enter for a new line. Raw HTML
+is shown as text, and links must be `https`, `http` or `mailto`. A merge field may appear in a link only after a
+fixed `https://host/` part or as exactly `mailto:{{email}}`, and values placed in links are percent-encoded. The body
+becomes an HTML fragment with inline styles plus a plain-text version (`app/content.py`).
 
 ## Decisions
 

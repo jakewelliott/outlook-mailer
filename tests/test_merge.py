@@ -137,6 +137,18 @@ def test_fallback_is_escaped_in_html() -> None:
     assert render(text, BLANK, mode="text") == 'Hi Tom & "Jerry" <3>'
 
 
+def test_url_mode_percent_encodes_values_and_fallbacks() -> None:
+    values = {"first_name": "a b#c&\"/?=+%<'", "email": "a+b@example.com"}
+    out = render("https://e.com/?n={{first_name}}&e={{email}}", values, mode="url")
+    assert out == "https://e.com/?n=a%20b%23c%26%22%2F%3F%3D%2B%25%3C%27&e=a%2Bb@example.com"
+    assert render("?n={{first_name|Dear friend}}", BLANK, mode="url") == "?n=Dear%20friend"
+    assert (
+        render("{{first_name}}", {"first_name": "Zoë 🎄"}, mode="url") == "Zo%C3%AB%20%F0%9F%8E%84"
+    )
+    assert render("{{first_name}}", {"first_name": "{{email}}"}, mode="url") == "%7B%7Bemail%7D%7D"
+    assert render("{{first_name}}", {"first_name": "a\x00\r\nb\tc"}, mode="url") == "a%0Ab%09c"
+
+
 def test_values_are_trimmed() -> None:
     assert render("[{{first_name}}]", {"first_name": " Jane \n"}, mode="text") == "[Jane]"
 
