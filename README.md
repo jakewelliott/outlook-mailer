@@ -7,7 +7,8 @@ with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Do
 
 > **Status: under construction.** So far: configuration, `/healthz`, the Docker image, the admin UI shell with
 > the Cloudflare Access check and the help page, CSV upload with column mapping and the validation report,
-> merge fields, and the Markdown-to-email conversion of the message body.
+> merge fields, the Markdown-to-email conversion of the message body, and the Christmas email template with its
+> footer and hosted images.
 > See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
@@ -52,6 +53,18 @@ bullet and numbered lists, `#` and `##` headings, a blank line for a new paragra
 is shown as text, and links must be `https`, `http` or `mailto`. A merge field may appear in a link only after a
 fixed `https://host/` part or as exactly `mailto:{{email}}`, and values placed in links are percent-encoded. The body
 becomes an HTML fragment with inline styles plus a plain-text version (`app/content.py`).
+
+### Email template
+
+Every email uses one Christmas template (`app/templates/email/christmas.html.j2`, based on
+[Cerberus](https://github.com/TedGoas/Cerberus) by Ted Goas, MIT): a header band with a Christmas-tree photo behind
+the business name and "Merry Christmas", a cream card holding your message, and a footer with the business name,
+postal address, "This message is an advertisement." (can be switched off), why the person is getting the email, and
+an **Unsubscribe** link. It is designed to work in Outlook (classic and new), Outlook.com, Gmail and Apple Mail, light and dark
+mode, and reads fine with images turned off. The plain-text version ends with the same footer. Images are served by
+the app at `/img/...` (public, no sign-in) and are public domain or the project's own work; see
+`app/static/email-img/CREDITS.md`. `docs/sample-email.html` shows a rendered example and `docs/email-qa.md` is the
+checklist for testing it in real mail apps.
 
 ## Decisions
 

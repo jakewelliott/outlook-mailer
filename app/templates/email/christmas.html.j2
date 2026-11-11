@@ -1,0 +1,200 @@
+{#-
+  Christmas email, adapted from Cerberus by Ted Goas (MIT; see LICENSE-cerberus.txt).
+  Rendered by app/render.py with autoescape ON. ``body`` is the trusted HTML fragment from
+  content.PreparedBody (Markup); everything else is plain text and is escaped here.
+
+  Style blocks: the three marked data-css-inline="ignore" are copied as they are (resets, media
+  queries, dark mode); the last one is inlined into style="" attributes by css-inline. The
+  Outlook.com dark-mode rules ([data-ogsc]/[data-ogsb]) have their own block because Gmail drops a
+  whole <style> block when it meets a selector it doesn't like.
+
+  Images: the header photo is a background (bgcolor + live text, so it reads with images off;
+  VML for classic Outlook), the holly divider is an <img> with alt, width and height.
+-#}
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>{{ subject }}</title>
+<!--[if gte mso 9]>
+<xml>
+<o:OfficeDocumentSettings>
+<o:AllowPNG/>
+<o:PixelsPerInch>96</o:PixelsPerInch>
+</o:OfficeDocumentSettings>
+</xml>
+<![endif]-->
+<style data-css-inline="ignore">
+:root { color-scheme: light dark; supported-color-schemes: light dark; }
+html, body { margin: 0 auto !important; padding: 0 !important; height: 100% !important; width: 100% !important; }
+* { -ms-text-size-adjust: 100%; -webkit-text-size-adjust: 100%; }
+div[style*="margin: 16px 0"] { margin: 0 !important; }
+#MessageViewBody, #MessageWebViewDiv { width: 100% !important; }
+table, td { mso-table-lspace: 0pt !important; mso-table-rspace: 0pt !important; }
+table { border-spacing: 0 !important; border-collapse: collapse !important; table-layout: fixed !important; margin: 0 auto !important; }
+img { -ms-interpolation-mode: bicubic; }
+a { text-decoration: none; }
+a[x-apple-data-detectors], .unstyle-auto-detected-links a, .aBn { border-bottom: 0 !important; cursor: default !important; color: inherit !important; text-decoration: none !important; font-size: inherit !important; font-family: inherit !important; font-weight: inherit !important; line-height: inherit !important; }
+.a6S { display: none !important; opacity: 0.01 !important; }
+.im { color: inherit !important; }
+img.g-img + div { display: none !important; }
+@media only screen and (min-device-width: 320px) and (max-device-width: 374px) { u ~ div .email-container { min-width: 320px !important; } }
+@media only screen and (min-device-width: 375px) and (max-device-width: 413px) { u ~ div .email-container { min-width: 375px !important; } }
+@media only screen and (min-device-width: 414px) { u ~ div .email-container { min-width: 414px !important; } }
+</style>
+<style data-css-inline="ignore">
+@media screen and (max-width: 600px) {
+  .hero-pad { padding: 32px 22px !important; }
+  .hero-headline { font-size: 34px !important; line-height: 40px !important; }
+  .card-pad { padding: 28px 22px 12px !important; }
+  .footer-pad { padding: 24px 22px !important; }
+}
+@media (prefers-color-scheme: dark) {
+  .email-bg { background: {{ dark.page|css }} !important; background-color: {{ dark.page|css }} !important; }
+  .card-bg { background: {{ dark.card|css }} !important; background-color: {{ dark.card|css }} !important; }
+  .body-copy p, .body-copy ul, .body-copy ol, .body-copy li, .dark-text { color: {{ dark.text|css }} !important; }
+  .body-copy h1, .body-copy h2 { color: {{ dark.heading|css }} !important; }
+  .body-copy a { color: {{ dark.link|css }} !important; }
+  .footer-bg { background: {{ dark.footer|css }} !important; background-color: {{ dark.footer|css }} !important; }
+  .footer-text, .footer-text p, .footer-text a { color: {{ dark.footer_text|css }} !important; }
+}
+</style>
+<style data-css-inline="ignore">
+[data-ogsc] .body-copy p, [data-ogsc] .body-copy ul, [data-ogsc] .body-copy ol, [data-ogsc] .body-copy li, [data-ogsc] .dark-text { color: {{ dark.text|css }} !important; }
+[data-ogsc] .body-copy h1, [data-ogsc] .body-copy h2 { color: {{ dark.heading|css }} !important; }
+[data-ogsc] .body-copy a { color: {{ dark.link|css }} !important; }
+[data-ogsc] .footer-text, [data-ogsc] .footer-text p, [data-ogsc] .footer-text a { color: {{ dark.footer_text|css }} !important; }
+[data-ogsc] .hero-name { color: {{ c.gold_light|css }} !important; }
+[data-ogsc] .hero-headline, [data-ogsc] .hero-tagline { color: {{ c.cream|css }} !important; }
+[data-ogsb] .email-bg { background-color: {{ dark.page|css }} !important; }
+[data-ogsb] .card-bg { background-color: {{ dark.card|css }} !important; }
+[data-ogsb] .footer-bg { background-color: {{ dark.footer|css }} !important; }
+[data-ogsb] .hero { background-color: {{ c.pine_dark|css }} !important; }
+</style>
+<style>
+.hero-name { font-family: {{ theme.body_font|css }}; font-size: 13px; line-height: 18px; letter-spacing: 3px; text-transform: uppercase; font-weight: bold; color: {{ c.gold_light|css }}; margin: 0 0 10px; }
+.hero-headline { font-family: {{ theme.heading_font|css }}; font-size: 44px; line-height: 50px; font-weight: normal; color: {{ c.cream|css }}; margin: 0; }
+.hero-tagline { font-family: {{ theme.heading_font|css }}; font-size: 19px; line-height: 26px; font-style: italic; color: {{ c.cream|css }}; margin: 8px 0 0; }
+.footer-text, .footer-text p { font-family: {{ theme.body_font|css }}; font-size: 13px; line-height: 20px; color: {{ c.footer_text|css }}; text-align: center; }
+.footer-text p { margin: 0 0 12px; }
+.footer-text p.footer-name { font-family: {{ theme.heading_font|css }}; font-size: 17px; line-height: 24px; font-weight: bold; }
+.footer-link { color: {{ c.footer_text|css }}; text-decoration: underline; font-weight: bold; }
+</style>
+</head>
+<body width="100%" class="email-bg" style="margin: 0; padding: 0 !important; mso-line-height-rule: exactly; background-color: {{ c.page|css }};">
+<center role="article" aria-roledescription="email" lang="en" class="email-bg" style="width: 100%; background-color: {{ c.page|css }};">
+<!--[if mso | IE]>
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: {{ c.page|css }};">
+<tr>
+<td>
+<![endif]-->
+{% if preheader %}
+<div style="max-height: 0; overflow: hidden; mso-hide: all;" aria-hidden="true">{{ preheader }}</div>
+<div style="display: none; font-size: 1px; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden; mso-hide: all; font-family: sans-serif;">{{ preheader_spacer }}</div>
+{% endif %}
+<div style="max-width: 600px; margin: 0 auto;" class="email-container">
+<!--[if mso]>
+<table align="center" role="presentation" cellspacing="0" cellpadding="0" border="0" width="600">
+<tr>
+<td>
+<![endif]-->
+<table align="center" role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin: auto;">
+<tr>
+<td aria-hidden="true" height="24" style="font-size: 0px; line-height: 0px;">&nbsp;</td>
+</tr>
+<tr>
+<td class="hero" valign="middle" height="220" bgcolor="{{ c.pine_dark|css }}" background="{{ img.banner }}" style="height: 220px; background-color: {{ c.pine_dark|css }}; background-image: url('{{ img.banner }}'); background-position: left center; background-size: cover; background-repeat: no-repeat; text-align: left;">
+<!--[if gte mso 9]>
+<v:image xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false" style="border: 0; display: inline-block; width: 600px; height: 220px;" src="{{ img.banner }}" />
+<v:rect xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false" style="border: 0; display: inline-block; position: absolute; width: 600px; height: 220px;">
+<v:fill opacity="0%" color="{{ c.pine_dark|css }}" />
+<![endif]-->
+<div>
+<!--[if mso]>
+<table align="left" role="presentation" border="0" cellspacing="0" cellpadding="0" width="600">
+<tr>
+<td width="600">
+<![endif]-->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+<tr>
+<td class="hero-pad" style="padding: 40px 40px;">
+<p class="hero-name">{{ business_name }}</p>
+<h1 class="hero-headline">{{ headline }}</h1>
+{% if tagline %}
+<p class="hero-tagline">{{ tagline }}</p>
+{% endif %}
+</td>
+</tr>
+</table>
+<!--[if mso]>
+</td>
+</tr>
+</table>
+<![endif]-->
+</div>
+<!--[if gte mso 9]>
+</v:fill>
+</v:rect>
+</v:image>
+<![endif]-->
+</td>
+</tr>
+<tr>
+<td aria-hidden="true" height="5" bgcolor="{{ c.gold|css }}" style="height: 5px; font-size: 0px; line-height: 0px; background-color: {{ c.gold|css }};">&nbsp;</td>
+</tr>
+<tr>
+<td class="card-bg" bgcolor="{{ c.card|css }}" style="background-color: {{ c.card|css }};">
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+{% if divider %}
+<tr>
+<td style="padding: 28px 20px 0; text-align: center;">
+<img src="{{ img.holly }}" width="120" height="50" alt="" border="0" style="display: block; margin: 0 auto; width: 120px; height: 50px; border: 0;">
+</td>
+</tr>
+{% endif %}
+<tr>
+<td class="card-pad body-copy" style="padding: 28px 44px 12px; font-family: {{ theme.body_font|css }}; font-size: 16px; line-height: 24px; color: {{ theme.text|css }}; text-align: left;">
+{{ body }}
+</td>
+</tr>
+</table>
+</td>
+</tr>
+<tr>
+<td aria-hidden="true" height="5" bgcolor="{{ c.gold|css }}" style="height: 5px; font-size: 0px; line-height: 0px; background-color: {{ c.gold|css }};">&nbsp;</td>
+</tr>
+<tr>
+<td class="footer-bg footer-pad footer-text" bgcolor="{{ c.footer|css }}" style="padding: 28px 40px; background-color: {{ c.footer|css }};">
+<p class="footer-name">{{ business_name }}</p>
+<p class="unstyle-auto-detected-links">{% for line in address_lines %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
+{% if is_advertisement %}
+<p>This message is an advertisement.</p>
+{% endif %}
+<p>{{ reason }}</p>
+<p style="margin: 0;">Don&rsquo;t want these emails? <a class="footer-link" href="{{ unsubscribe_url }}">Unsubscribe</a></p>
+</td>
+</tr>
+<tr>
+<td aria-hidden="true" height="24" style="font-size: 0px; line-height: 0px;">&nbsp;</td>
+</tr>
+</table>
+<!--[if mso]>
+</td>
+</tr>
+</table>
+<![endif]-->
+</div>
+<!--[if mso | IE]>
+</td>
+</tr>
+</table>
+<![endif]-->
+</center>
+</body>
+</html>

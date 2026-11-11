@@ -115,16 +115,23 @@ Stage 5 (`app/merge.py`) leaves three hazards for stage 6. Each needs a test.
 
 ## Email template
 
-- Based on **Cerberus** (MIT license, by Ted Goas): table layout, MSO ghost tables, VML button, dark-mode handling.
+- Based on **Cerberus** (MIT license, by Ted Goas): table layout, MSO ghost tables, VML background, dark-mode handling.
   Credit and license kept in `app/templates/email/LICENSE-cerberus.txt`.
 - Christmas styling: deep red, pine green and gold on cream; serif headings (Georgia stack).
 - Images served by the app at `PUBLIC_BASE_URL/img/...`, absolute URLs in the email. Every image has alt text,
   width and height, and the email reads fine with images off. **All images free-license**, each listed with source,
-  author and license in `app/static/img/CREDITS.md`. Prefer CC0 / public domain. Formats PNG or JPG (no SVG, no
+  author and license in `app/static/email-img/CREDITS.md`. Prefer CC0 / public domain. Formats PNG or JPG (no SVG, no
   data URIs). Keep total image weight small (under about 300 KB).
 - Footer (CAN-SPAM, commercial): business/sender name, postal address, "This message is an advertisement" (toggle,
   default on), why you're receiving this, and an **Unsubscribe link** (`PUBLIC_BASE_URL/u/<token>`). No mailto opt-out.
 - HTML under 102 KB (Gmail clipping). No `<script>`, no external CSS or web fonts.
+- As built (stage 7): `app/render.py` (`render_email`, `render_text`, `FooterInfo`) and
+  `app/templates/email/christmas.html.j2`. The header band is a photo used as a CSS/VML background behind live text
+  (dark green `bgcolor` with images off); the holly divider is an `<img>` with empty `alt` (decoration). Images live in
+  `app/static/email-img/` with a version in the file name and are served at `/img/<file>` with
+  `Cache-Control: public, max-age=31536000, immutable`; to change one, add a new file name (sent emails keep
+  linking to the old one). Only `.png`/`.jpg`/`.jpeg`/`.gif` are served there. Manual client checklist:
+  [email-qa.md](email-qa.md); rendered sample: [sample-email.html](sample-email.html).
 
 ## Sending
 

@@ -12,16 +12,37 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
-from app import ui, ui_send
+from app import render, ui, ui_send
 from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
 from app.db import Database
 from app.security import CsrfSigner, Forbidden, RequestGuard, forbidden_response
 
 log = logging.getLogger("outlook_mailer")
+
+
+class EmailImages(StaticFiles):
+    """`/img/<file>`: public email images. Image files only (so CREDITS.md is not served), no
+    directory listing (StaticFiles without `html=True` answers 404 for directories), long cache.
+
+    Cached as immutable: image file names carry a version, and a changed image gets a new name
+    (see `app/render.py`).
+    """
+
+    SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif"})
+    CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        if Path(path).suffix.lower() not in self.SUFFIXES:
+            raise HTTPException(status_code=404)
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = self.CACHE_CONTROL
+        return response
 
 
 def create_app(settings: Settings | None = None, verifier: AccessVerifier | None = None) -> FastAPI:
@@ -68,6 +89,8 @@ def create_app(settings: Settings | None = None, verifier: AccessVerifier | None
     app.include_router(ui_send.router)
     # Admin-only: the guard protects everything outside the public paths.
     app.mount("/static", StaticFiles(directory=ui.STATIC_DIR), name="static")
+    # Public: images linked from sent emails (the guard treats /img/* as public).
+    app.mount("/img", EmailImages(directory=render.EMAIL_IMG_DIR), name="img")
 
     return app
 
