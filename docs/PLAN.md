@@ -95,6 +95,24 @@ The app refuses to start if a required variable is missing or invalid, and says 
 - Output is email-safe HTML (inline styles applied by the template/inliner), plus a plain-text rendering
   (bold/italic markers removed, links as `text (url)`).
 
+### Merge fields in the Markdown body (stage 6 must handle these)
+
+Stage 5 (`app/merge.py`) leaves three hazards for stage 6. Each needs a test.
+
+- **Validate the raw body first.** Run `merge.validate()` on the body exactly as Jake typed it, before
+  `protect()` and Markdown, so error messages quote his text. The re-validation inside `render()` after Markdown
+  is only a backstop.
+- **A placeholder in a link target gets past the scheme check.** `[x]({{first_name}})` converts to
+  `href="{{first_name}}"`, which passes an http/https/mailto check as a relative URL. The recipient's value then
+  becomes the whole href (`javascript:…` or a phishing URL). Rule: a placeholder may appear in a link target only
+  after a fixed `https://host/…` or `http://host/…` prefix (scheme and host written out by Jake, before any
+  placeholder), or as exactly `mailto:{{email}}`. Anything else is a validation error shown to Jake before sending.
+  As a second line of defence, re-check link schemes in the merged HTML per recipient.
+- **Values inside URLs must be percent-encoded, not only HTML-escaped.** A value like `a b#c` would otherwise
+  break the URL or change its meaning. The merge needs a URL-context render for placeholders inside `href`:
+  encode the value with `urllib.parse.quote`, then HTML-escape it for the attribute. Plain-text output shows
+  links as `text (url)`, so use the same encoded URL there.
+
 ## Email template
 
 - Based on **Cerberus** (MIT license, by Ted Goas): table layout, MSO ghost tables, VML button, dark-mode handling.
@@ -149,7 +167,7 @@ Each stage: one coding agent, one reviewer, one commit to `main`. Tests run in D
 | 3 | UI shell, Cloudflare Access JWT check, CSRF, security headers, help page | 403 without valid JWT on admin; public paths open; help page lists steps and merge fields |
 | 4 | CSV upload and the three mapping dropdowns, status value picker, validation report | encodings/delimiters fixtures; required dropdowns enforced; status filter works |
 | 5 | Merge engine | fallbacks, escaping, unknown-field errors, `{{7*7}}` not evaluated |
-| 6 | Markdown → email HTML + plain text | all syntax above incl. `++underline++`; raw HTML escaped; unsafe links rejected |
+| 6 | Markdown → email HTML + plain text | all syntax above incl. `++underline++`; raw HTML escaped; unsafe links rejected; merge-field hazards in "Merge fields in the Markdown body" handled (raw body validated first, placeholders only after a fixed `http(s)://host/` prefix or as `mailto:{{email}}`, values in URLs percent-encoded) |
 | 7 | Christmas template (Cerberus-based) + free-license images at `/img/*` + CREDITS.md | lint checks (no script, alt/width/height, < 102 KB, absolute image URLs); snapshot tests |
 | 8 | Compose page, saved settings, live preview (light/dark) | footer required fields enforced; preview for any row. Note: an `<iframe sandbox srcdoc>` inherits the admin CSP (`style-src 'self'`), so the preview needs a per-route CSP allowing inline styles for that frame, or is served from its own route with its own CSP |
 | 9 | Message builder (MIME) + transport interface + mock transport | valid multipart/alternative `.eml`; single recipient; List-Unsubscribe headers |

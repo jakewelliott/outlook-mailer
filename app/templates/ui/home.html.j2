@@ -38,7 +38,10 @@
 {% endraw %}
     </tbody>
   </table>
-  <p class="muted">Any other field name is an error and blocks sending.</p>
+  <p class="muted">Upper or lower case and spaces inside the braces don't matter
+    ({% raw %}<code>{{ First_Name }}</code>{% endraw %} works). The fallback can't contain <code>{</code>,
+    <code>}</code> or <code>|</code>. Any other field name, or any other text starting with
+    {% raw %}<code>{{</code>{% endraw %}, is an error and blocks sending.</p>
 </section>
 
 <section class="card">
