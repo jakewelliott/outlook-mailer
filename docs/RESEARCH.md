@@ -1,6 +1,6 @@
 # Research notes (checked 2026-10-25)
 
-Saved from the planning stage. Section 2.3 conclusion is superseded: we send MIME, which may carry List-Unsubscribe-Post (verified in stage 12).
+Saved from the planning stage. Section 2.3 conclusion is superseded: we send MIME, which may carry List-Unsubscribe-Post (see 2.6; verified in stage 12).
 
 ## 2. Key findings from research (checked 2026-10-25)
 
@@ -53,3 +53,12 @@ Source: https://www.ftc.gov/business-guidance/resources/can-spam-act-compliance-
 - System font stacks (Georgia or Arial). Decorations use Unicode or emoji (❄ ✦ 🎄), which render everywhere, or small images (Q14). Alt text everywhere. The layout still reads well with images off: bgcolor fallbacks and live text, not text inside images.
 - A `multipart/alternative` plain-text part (Graph `sendMail` JSON allows only one body, see Risks R5).
 
+
+### 2.6 Sending MIME through Graph (checked 2026-11-11, stage 9)
+| Finding | Source |
+|---|---|
+| `POST /me/sendMail` takes MIME when the request has `Content-Type: text/plain`: the body is the whole message (headers and MIME parts) **base64-encoded**. The doc examples wrap the base64 at 76 columns; nothing says wrapping is required, and working clients send it unwrapped: the Swoosh MsGraph adapter (v1.16.5) and Glen Scales' sendMail MIME sample both base64 the whole message in one piece. Success is `202 Accepted` with an empty body, which only means "accepted", not delivered. Malformed MIME gives `400` with code `ErrorMimeContentInvalidBase64String` ("Invalid base64 string for MIME content"). | https://learn.microsoft.com/en-us/graph/api/user-sendmail (updated 2026-06-19); https://learn.microsoft.com/en-us/graph/outlook-send-mime-message (updated 2025-08-06); https://github.com/swoosh/swoosh/blob/v1.16.5/lib/swoosh/adapters/ms_graph.ex ; https://gist.github.com/gscales/02b32a66dfb0b11792b8a2d852188086 |
+| sendMail "saves the message in the Sent Items folder". `saveToSentItems` is a JSON-body parameter, so with MIME there is no way to turn it off (we want the copy anyway). | user-sendmail |
+| Exchange copies the MIME into a draft, parses it into message properties and recipients, and transport then sends the MIME "more or less intact". So recipients come from the MIME headers (`To`/`Cc`/`Bcc`): the app must never write any but one `To`. Microsoft doesn't say which headers survive. Expect From/Sender to be the signed-in mailbox (a different From may be refused as send-as), and Message-ID, List-Unsubscribe and List-Unsubscribe-Post to be kept. Stage 12 checks this on a real test send. | https://learn.microsoft.com/en-us/graph/outlook-things-to-know-about-send-mail (updated 2025-08-06) |
+| No size limit is documented for MIME sendMail. Graph's Outlook docs put the single-request ceiling for attachments at 3 MB (larger needs an upload session, with chunks under 4 MB), and 4 MB is Graph's usual request limit, so the app refuses a base64 payload over 4 MB. A 102 KB email (Gmail's clipping point, which the compose page enforces) comes to a few hundred KB even if every character is non-ASCII. | https://learn.microsoft.com/en-us/graph/outlook-large-attachments (updated 2025-08-06) |
+| Python's `email` package folds a long `List-Unsubscribe` value into RFC 2047 encoded words (and decodes them again when parsing, so a round-trip test doesn't show it). Mail apps don't decode encoded words in that header, so the app writes it raw on one line (under the 998-character limit). Python also refuses a non-ASCII local part without SMTPUTF8 and, with the SMTP policy, would send non-ASCII text as raw 8-bit; the app uses quoted-printable/base64 and IDNA domains instead. | (tested with Python 3.12, `email.policy.SMTP`) |

@@ -123,10 +123,18 @@ def _clean_value(value: str) -> str:
     return "".join(c for c in value if c in "\t\n" or unicodedata.category(c) != "Cc")
 
 
+def strip_invisible(value: str) -> str:
+    """``value`` without bidi embeddings/overrides/isolates and invisible characters (not ZWJ/ZWNJ).
+
+    Used for subjects and for display names in the MIME headers (``app/message.py``).
+    """
+    return _SUBJECT_STRIP.sub("", value)
+
+
 def _clean_subject(value: str) -> str:
     value = re.sub(r"\s+", " ", value)  # CR, LF, tabs, U+2028 etc. become spaces
     value = "".join(c for c in value if unicodedata.category(c) != "Cc")
-    value = _SUBJECT_STRIP.sub("", value)
+    value = strip_invisible(value)
     return re.sub(r" {2,}", " ", value).strip()
 
 

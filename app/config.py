@@ -97,6 +97,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             errors.append(f"PUBLIC_BASE_URL {problem}, got {public_base_url!r}")
         elif public_base_url.endswith("/"):
             errors.append("PUBLIC_BASE_URL must not end with a slash")
+        elif ":" in (urlsplit(public_base_url).hostname or ""):
+            # The host goes into every Message-ID (app/message.py), which needs a name.
+            errors.append("PUBLIC_BASE_URL must use a host name, not an IPv6 address")
 
     unsubscribe_secret = _get(env, "UNSUBSCRIBE_SECRET")
     if unsubscribe_secret is None:

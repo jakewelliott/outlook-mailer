@@ -436,3 +436,23 @@ def test_size_limit_blocks_saving(client: TestClient) -> None:
     assert any("over the 102 KB limit" in e for e in field_errors(r.text, "body"))
     assert field_value(r.text, "body") == body
     assert compose.get_content(client.app.state.db, draft) is None  # type: ignore[attr-defined]
+
+
+def test_form_maxlength_matches_server_limits(shared: tuple[TestClient, str]) -> None:
+    client, draft = shared
+    page = client.get(f"/send/{draft}/compose").text
+    for name in FORM:
+        if name == "is_advertisement":
+            continue
+        tag = re.search(rf'<(?:input|textarea)[^>]*\bname="{name}"[^>]*>', page)
+        assert tag, name
+        assert f'maxlength="{compose.FORM_LIMITS[name]}"' in tag.group(0), name
+    assert set(compose.FORM_LIMITS) == set(FORM) - {"is_advertisement"}
+
+
+def test_footer_limits_are_the_form_limits() -> None:
+    long_name = "n" * (compose.FORM_LIMITS["business_name"] + 1)
+    c = compose.DraftContent(**{**FORM, "business_name": long_name, "is_advertisement": True})
+    assert "business_name" in compose.validate(c)
+    ok = compose.DraftContent(**{**FORM, "business_name": long_name[:-1], "is_advertisement": True})
+    assert "business_name" not in compose.validate(ok)

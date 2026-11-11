@@ -129,6 +129,7 @@ def _page(
             "preview_errors": preview_errors,
             "size": size,
             "size_limit_kb": compose.SIZE_LIMIT_BYTES // compose.KB,
+            "limits": compose.FORM_LIMITS,
             "choices": _choices(report),
             "choice": choice,
             "scheme": scheme,

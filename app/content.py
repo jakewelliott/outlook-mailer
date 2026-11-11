@@ -224,8 +224,18 @@ def check_subject(subject: str) -> list[str]:
 
 
 def render_subject(subject: str, values: Mapping[str, str | None]) -> str:
-    """One recipient's subject line. Raises ``MergeError`` if ``check_subject`` finds problems."""
-    return merge.render(subject, values, mode="subject")
+    """One recipient's subject line. Raises ``MergeError`` if ``check_subject`` finds problems.
+
+    ``=?`` becomes ``= ?``: mail apps (and Python, when building the MIME) would decode text that
+    looks like an RFC 2047 encoded word, so a merge value could smuggle in a line break that way.
+    ``app/message.py`` does the same, so the preview shows exactly the subject that is sent.
+    """
+    return neutralise_encoded_words(merge.render(subject, values, mode="subject"))
+
+
+def neutralise_encoded_words(text: str) -> str:
+    """``text`` with every ``=?`` written as ``= ?``, so nothing in it reads as an encoded word."""
+    return text.replace("=?", "= ?")
 
 
 # --- rendering -------------------------------------------------------------------------------

@@ -37,18 +37,18 @@
     <h2>Message</h2>
     <p>
       <label for="subject">Subject <span class="req">(required)</span></label><br>
-      <input type="text" id="subject" name="subject" value="{{ c.subject }}" maxlength="250" required class="wide"{{ described("subject") }}>
+      <input type="text" id="subject" name="subject" value="{{ c.subject }}" maxlength="{{ limits.subject }}" required class="wide"{{ described("subject") }}>
       {{ field_errors("subject") }}
     </p>
     <p>
       <label for="preheader">Preview text <span class="req">(optional)</span></label><br>
-      <input type="text" id="preheader" name="preheader" value="{{ c.preheader }}" maxlength="250" class="wide"{{ described("preheader", true) }}>
+      <input type="text" id="preheader" name="preheader" value="{{ c.preheader }}" maxlength="{{ limits.preheader }}" class="wide"{{ described("preheader", true) }}>
       <span class="hint" id="preheader-hint">Shown after the subject in most inboxes. Merge fields work here too.</span>
       {{ field_errors("preheader") }}
     </p>
     <p>
       <label for="body">Message <span class="req">(required, Markdown)</span></label><br>
-      <textarea id="body" name="body" rows="16" class="wide mono" required{{ described("body", true) }}>{{ c.body }}</textarea>
+      <textarea id="body" name="body" rows="16" maxlength="{{ limits.body }}" class="wide mono" required{{ described("body", true) }}>{{ c.body }}</textarea>
       <span class="hint" id="body-hint">{% raw %}<code>**bold**</code>, <code>*italic*</code>, <code>++underline++</code>,
         <code>[text](https://…)</code>, <code>- list</code>, <code># Heading</code>, <code>{{first_name|Friend}}</code>.{% endraw %}
         <a href="/#markdown">All formatting</a> · <a href="/#merge-fields">Merge fields</a></span>
@@ -60,12 +60,12 @@
     <h2>Header</h2>
     <p>
       <label for="headline">Headline <span class="req">(required)</span></label><br>
-      <input type="text" id="headline" name="headline" value="{{ c.headline }}" maxlength="60" required class="wide"{{ described("headline") }}>
+      <input type="text" id="headline" name="headline" value="{{ c.headline }}" maxlength="{{ limits.headline }}" required class="wide"{{ described("headline") }}>
       {{ field_errors("headline") }}
     </p>
     <p>
       <label for="tagline">Tagline <span class="req">(optional)</span></label><br>
-      <input type="text" id="tagline" name="tagline" value="{{ c.tagline }}" maxlength="100" class="wide"{{ described("tagline") }}>
+      <input type="text" id="tagline" name="tagline" value="{{ c.tagline }}" maxlength="{{ limits.tagline }}" class="wide"{{ described("tagline") }}>
       {{ field_errors("tagline") }}
     </p>
   </section>
@@ -76,12 +76,12 @@
       automatically. These are remembered for your next send.</p>
     <p>
       <label for="business_name">Business or sender name <span class="req">(required)</span></label><br>
-      <input type="text" id="business_name" name="business_name" value="{{ c.business_name }}" maxlength="100" required class="wide"{{ described("business_name") }}>
+      <input type="text" id="business_name" name="business_name" value="{{ c.business_name }}" maxlength="{{ limits.business_name }}" required class="wide"{{ described("business_name") }}>
       {{ field_errors("business_name") }}
     </p>
     <p>
       <label for="postal_address">Postal address <span class="req">(required)</span></label><br>
-      <textarea id="postal_address" name="postal_address" rows="4" class="wide" required{{ described("postal_address", true) }}>{{ c.postal_address }}</textarea>
+      <textarea id="postal_address" name="postal_address" rows="4" maxlength="{{ limits.postal_address }}" class="wide" required{{ described("postal_address", true) }}>{{ c.postal_address }}</textarea>
       <span class="hint" id="postal_address-hint">A street address or PO box, one line per line (up to 6 lines).</span>
       {{ field_errors("postal_address") }}
     </p>
@@ -91,7 +91,7 @@
     </p>
     <p>
       <label for="reason">Why you're receiving this <span class="req">(optional)</span></label><br>
-      <textarea id="reason" name="reason" rows="2" class="wide"{{ described("reason", true) }}>{{ c.reason }}</textarea>
+      <textarea id="reason" name="reason" rows="2" maxlength="{{ limits.reason }}" class="wide"{{ described("reason", true) }}>{{ c.reason }}</textarea>
       <span class="hint" id="reason-hint">Leave blank to use: “{{ default_reason }}”</span>
       {{ field_errors("reason") }}
     </p>

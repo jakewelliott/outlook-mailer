@@ -68,7 +68,7 @@ PREHEADER_SPACER = "\u200c\u00a0" * 40
 
 _BASE_URL = re.compile(r"https?://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~/-]*)?")
 _URL = re.compile(r"https?://[^\s\"'<>\\`]+")
-_MAX_NAME, _MAX_ADDRESS, _MAX_ADDRESS_LINES, _MAX_REASON = 100, 300, 6, 300
+MAX_BUSINESS_NAME, MAX_ADDRESS, MAX_ADDRESS_LINES, MAX_REASON = 100, 300, 6, 300
 
 
 class FooterError(ValueError):
@@ -105,18 +105,20 @@ class FooterInfo:
         errors = []
         if not name:
             errors.append("The business or sender name is required.")
-        elif len(name) > _MAX_NAME:
-            errors.append(f"The business name is too long (at most {_MAX_NAME} characters).")
+        elif len(name) > MAX_BUSINESS_NAME:
+            errors.append(
+                f"The business name is too long (at most {MAX_BUSINESS_NAME} characters)."
+            )
         if not address:
             errors.append("The postal address is required (CAN-SPAM).")
-        elif len(address) > _MAX_ADDRESS or address.count("\n") >= _MAX_ADDRESS_LINES:
+        elif len(address) > MAX_ADDRESS or address.count("\n") >= MAX_ADDRESS_LINES:
             errors.append(
-                f"The postal address is too long (at most {_MAX_ADDRESS_LINES} lines and "
-                f"{_MAX_ADDRESS} characters)."
+                f"The postal address is too long (at most {MAX_ADDRESS_LINES} lines and "
+                f"{MAX_ADDRESS} characters)."
             )
-        if len(reason) > _MAX_REASON:
+        if len(reason) > MAX_REASON:
             errors.append(
-                f"The 'why you're receiving this' text is too long (at most {_MAX_REASON})."
+                f"The 'why you're receiving this' text is too long (at most {MAX_REASON})."
             )
         for label, value in (
             ("business name", name),

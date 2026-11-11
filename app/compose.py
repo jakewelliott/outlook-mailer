@@ -11,8 +11,8 @@ starts with the last business name and postal address used.
 
 Gmail clips HTML over about 102 KB ("[Message clipped]"), which hides the footer and its
 unsubscribe link. ``size_check`` renders for the longest first name and address on the list (and
-for an empty first name, which gets the merge fallbacks), so the number shown is an upper bound
-for every recipient.
+for an empty first name, which gets the merge fallbacks), so the number shown is a near-upper
+bound (see ``size_check`` for the small gap).
 """
 
 import html
@@ -34,6 +34,20 @@ SIZE_WARN_BYTES = 90 * KB
 SIZE_LIMIT_BYTES = 102 * KB
 MAX_SUBJECT, MAX_PREHEADER, MAX_BODY = 250, 250, 100_000
 MAX_HEADLINE, MAX_TAGLINE = 60, 100
+
+# The compose form's maxlength per field: the server-side limit, so the browser stops typing where
+# saving would fail. The server measures the footer after collapsing spaces and dropping blank
+# lines, so the browser limit is the same or stricter, never looser.
+FORM_LIMITS = {
+    "subject": MAX_SUBJECT,
+    "preheader": MAX_PREHEADER,
+    "body": MAX_BODY,
+    "headline": MAX_HEADLINE,
+    "tagline": MAX_TAGLINE,
+    "business_name": render.MAX_BUSINESS_NAME,
+    "postal_address": render.MAX_ADDRESS,
+    "reason": render.MAX_REASON,
+}
 
 # Footer and header fields, saved app-wide as well as on the draft.
 SETTING_FIELDS = (
@@ -271,11 +285,15 @@ def size_check(
     public_base_url: str,
     unsubscribe_secret: str,
 ) -> SizeCheck:
-    """UTF-8 size of the largest HTML any recipient on the list can get. ``c`` must be valid.
+    """Near-upper bound on the UTF-8 size of the HTML any recipient on the list gets.
 
-    A first name and an address change the size independently, so each is measured on its own:
-    the longest first name against an empty one (whose merge fallbacks may be longer), then the
-    longest address in the HTML against the longest in the unsubscribe token.
+    ``c`` must be valid. A first name and an address change the size independently, so each is
+    measured on its own: the longest first name against an empty one (whose merge fallbacks may be
+    longer), then the longest address in the HTML against the longest in the unsubscribe token.
+    Because the address is measured twice rather than as one combined worst case, an address that
+    is second-longest both in the HTML (escaping, percent-encoding) and in the token can come out
+    slightly larger than the figure. Lengths in both track the address length, so the gap is tiny
+    next to the room the 90 KB warning leaves.
     """
     recipients = list(recipients)
     prepared = content.prepare(c.body)

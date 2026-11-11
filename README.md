@@ -8,8 +8,8 @@ with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Do
 > **Status: under construction.** So far: configuration, `/healthz`, the Docker image, the admin UI shell with
 > the Cloudflare Access check and the help page, CSV upload with column mapping and the validation report,
 > merge fields, the Markdown-to-email conversion of the message body, the Christmas email template with its
-> footer and hosted images, and the compose page with saved footer settings and a light/dark preview. Sending
-> comes next.
+> footer and hosted images, the compose page with saved footer settings and a light/dark preview, and the
+> MIME message builder with the mock transport. The send engine comes next.
 > See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
@@ -82,6 +82,18 @@ their own way. The page also shows the email's size for the longest name and add
 90 KB and refuses to save above 102 KB, where Gmail cuts messages off and would hide the unsubscribe link.
 Unsubscribe links are `PUBLIC_BASE_URL/u/<token>`, where the token is the address (base64url) plus a truncated
 HMAC-SHA256 made with `UNSUBSCRIBE_SECRET` (`app/unsubscribe_tokens.py`).
+
+### Messages
+
+Each recipient gets their own email (`app/message.py`): a standard MIME message with a plain-text part followed by
+the HTML part, both UTF-8 (quoted-printable, or base64 for text that is mostly non-Latin), addressed to that one
+person in `To` and nobody else (no `Cc`, `Bcc` or `Reply-To`). Headers: `From`, `To` (with a display name, safely
+quoted or encoded), `Subject`, `Date`, `Message-ID`, `List-Unsubscribe: <PUBLIC_BASE_URL/u/<token>>` and
+`List-Unsubscribe-Post: List-Unsubscribe=One-Click`, so mail apps that support it (Gmail, Apple Mail, Outlook.com)
+can show their own unsubscribe button. A header value containing a line break or control character is refused.
+Microsoft Graph gets the message base64-encoded. With `MAIL_TRANSPORT=mock` nothing is sent: each message is written
+to `DATA_DIR/outbox/<time>-<n>-<recipient>.eml` (readable only by the app), which opens in any mail app, and the
+`From` is the placeholder `sender@example.invalid`.
 
 ## Decisions
 

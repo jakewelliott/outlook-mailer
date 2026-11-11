@@ -98,6 +98,11 @@ def test_public_base_url_must_be_absolute_http_url(valid_env: dict[str, str], va
     assert_error(valid_env, "PUBLIC_BASE_URL must")
 
 
+def test_public_base_url_ipv6_host_rejected(valid_env: dict[str, str]) -> None:
+    valid_env["PUBLIC_BASE_URL"] = "https://[::1]:8765"
+    assert_error(valid_env, "PUBLIC_BASE_URL must use a host name")
+
+
 def test_public_base_url_double_trailing_slash_rejected(valid_env: dict[str, str]) -> None:
     valid_env["PUBLIC_BASE_URL"] = "https://mail.example.com//"
     assert_error(valid_env, "PUBLIC_BASE_URL must not end with a slash")

@@ -423,3 +423,6 @@ def test_subject_helpers() -> None:
     assert render_subject("Hi {{first_name}} **x**", values) == "Hi Jane Bcc: x@y.z **x**"
     with pytest.raises(MergeError):
         render_subject("Hi {{7*7}}", values)
+    # Nothing in a subject may read as an RFC 2047 encoded word (app/message.py does the same).
+    tricky = {"first_name": "=?utf-8?q?x=0D=0A?=", "email": "e@x"}
+    assert render_subject("A =?b {{first_name}}", tricky) == "A = ?b = ?utf-8?q?x=0D=0A?="
