@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "outlook-mailer"
+version = "0.1.0"
+description = "Small web app that sends a rate-limited Markdown email campaign from a personal Outlook.com account via Microsoft Graph."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.162,<1",
+    "uvicorn>=0.54,<1",
+    "jinja2>=3.1.6,<4",
+    "python-multipart>=0.0.33,<1",
+    "msal>=1.39,<2",
+    "httpx>=0.28.1,<1",
+    "email-validator>=2.3,<3",
+    "css-inline>=0.23,<1",
+    "charset-normalizer>=3.5,<4",
+    "markdown-it-py>=4.3,<5",
+    "pyjwt[crypto]>=2.15,<3",
+    "cryptography>=50,<51",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.2,<10",
+    "respx>=0.23,<1",
+    "ruff>=0.17.4,<0.18",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
