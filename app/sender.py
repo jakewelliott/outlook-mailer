@@ -26,7 +26,8 @@ never sent by Graph, or the other way round; it can only be cancelled):
    ``message.build_mime``, ``message.check_single_recipient``), the opt-out list is checked once
    more, and then **exactly-once**: the recipient is set to ``sending`` and committed (with a
    ``send_log`` row) *before* the transport is called, and the outcome is written straight after
-   (retried a few times if the write fails; until it succeeds nothing else is sent). If the app
+   (retried a few times if the write fails; until it succeeds nothing else is sent; writing it
+   again after a write that did commit changes nothing, see ``_record``). If the app
    stops in between, the recipient stays ``sending``; at the next start
    ``campaigns.recover_interrupted`` marks it ``failed`` ("interrupted during send...") and it is
    never resent automatically, since the message may already have gone out.
@@ -394,13 +395,6 @@ class SendWorker:
             0
         ]
 
-    @staticmethod
-    def _recipient_status(conn: sqlite3.Connection, campaign_id: int, row_no: int) -> str:
-        return conn.execute(
-            "SELECT status FROM campaign_recipients WHERE campaign_id = ? AND row_no = ?",
-            (campaign_id, row_no),
-        ).fetchone()[0]
-
     def _cap_resume_at(self, now: datetime) -> datetime | None:
         """None if another message fits in the rolling window, else when one will."""
         sent = sent_in_window(self.db, now)
@@ -707,21 +701,46 @@ class SendWorker:
         built, or no account is connected) is dropped if the campaign is no longer ``sending``
         or the recipient no longer ``pending``: the pause or cancel landed before it, as it
         would have for ``_mark_sending``. The recipient stays as that left it (``pending``, or
-        ``not_sent`` after a cancel, never ``failed``), with nothing counted (fix A2)."""
+        ``not_sent`` after a cancel, never ``failed``), with nothing counted (fix A2).
+
+        Writing the same outcome again is a no-op (fix A3): ``_save`` and the next step write
+        it again after an error, and the first write may have committed before the error was
+        raised. A transport outcome is written only while the recipient is still ``sending``
+        with this ``log_id`` as its latest ``send_log`` row (only ``_record`` moves it off
+        ``sending``); a pre-send one only while the recipient is ``pending`` with the attempts
+        it had when planned (a recorded build failure counts one)."""
         attempts = row.attempts + 1
         who = f"Row {row.row_no} ({row.email})"
         with self.db.connect() as conn:
             campaigns._begin_immediate(conn)
             status = self._status(conn, c.id)
-            if log_id is None and (
-                status != campaigns.SENDING
-                or self._recipient_status(conn, c.id, row.row_no) != campaigns.R_PENDING
+            current = conn.execute(
+                "SELECT status, attempts, (SELECT MAX(id) FROM send_log WHERE campaign_id = ? "
+                "AND row_no = ?) AS log_id FROM campaign_recipients "
+                "WHERE campaign_id = ? AND row_no = ?",
+                (c.id, row.row_no, c.id, row.row_no),
+            ).fetchone()
+            if log_id is not None and (
+                current["status"] != campaigns.R_SENDING or current["log_id"] != log_id
             ):
                 log.info(
-                    "Row %s of send #%s was not sent (the send is now %s); not recording: %s",
+                    "The outcome for row %s of send #%s is already saved; not recording it again.",
+                    row.row_no,
+                    c.id,
+                )
+                return
+            if log_id is None and (
+                status != campaigns.SENDING
+                or current["status"] != campaigns.R_PENDING
+                or current["attempts"] != row.attempts
+            ):
+                log.info(
+                    "Row %s of send #%s was not sent (the send is now %s, the row %s); not "
+                    "recording: %s",
                     row.row_no,
                     c.id,
                     status,
+                    current["status"],
                     result.error,
                 )
                 return
