@@ -74,7 +74,10 @@ An exception while rendering is a retryable failed attempt (a ``MessageError``: 
 exception from ``transport.send`` is outcome unknown (a ``MessageError``, raised before
 anything is sent: permanent). ``MAX_CONSECUTIVE_FAILURES`` failures in a row (retryable, unknown
 or permanent; any recipients) stop the campaign (``stopped_error``). A campaign the user paused
-is never turned into ``stopped_error``: it stays paused, with the reason in its events.
+is never turned into ``stopped_error``: it stays paused, with the reason in its events. A pause
+or cancel landing after the plan but before the transport call wins over a rendering failure
+(or "no account connected"): it isn't recorded or counted, and the recipient stays ``pending``
+(paused) or ``not_sent`` (cancelled), never ``failed``.
 
 Pause, resume and cancel are database changes made by the UI (``app.campaigns``), which then call
 ``wake``; the worker re-reads the campaign at every step. A pause or cancel during a transport
@@ -391,6 +394,13 @@ class SendWorker:
             0
         ]
 
+    @staticmethod
+    def _recipient_status(conn: sqlite3.Connection, campaign_id: int, row_no: int) -> str:
+        return conn.execute(
+            "SELECT status FROM campaign_recipients WHERE campaign_id = ? AND row_no = ?",
+            (campaign_id, row_no),
+        ).fetchone()[0]
+
     def _cap_resume_at(self, now: datetime) -> datetime | None:
         """None if another message fits in the rolling window, else when one will."""
         sent = sent_in_window(self.db, now)
@@ -691,12 +701,30 @@ class SendWorker:
         The write lock is taken before the campaign's status is read, so a pause or cancel from
         the UI lands wholly before or after this. Cancelled by then: an outcome that would wait
         (retry, throttle, sign-in problem) leaves the recipient ``not_sent``, like the cancel did
-        for the others; sent, failed and unknown are recorded as they are."""
+        for the others; sent, failed and unknown are recorded as they are.
+
+        An outcome from before the transport call (``log_id`` None: the message couldn't be
+        built, or no account is connected) is dropped if the campaign is no longer ``sending``
+        or the recipient no longer ``pending``: the pause or cancel landed before it, as it
+        would have for ``_mark_sending``. The recipient stays as that left it (``pending``, or
+        ``not_sent`` after a cancel, never ``failed``), with nothing counted (fix A2)."""
         attempts = row.attempts + 1
         who = f"Row {row.row_no} ({row.email})"
         with self.db.connect() as conn:
             campaigns._begin_immediate(conn)
             status = self._status(conn, c.id)
+            if log_id is None and (
+                status != campaigns.SENDING
+                or self._recipient_status(conn, c.id, row.row_no) != campaigns.R_PENDING
+            ):
+                log.info(
+                    "Row %s of send #%s was not sent (the send is now %s); not recording: %s",
+                    row.row_no,
+                    c.id,
+                    status,
+                    result.error,
+                )
+                return
             final = status in campaigns.FINAL
             waiting = campaigns.R_NOT_SENT if status == campaigns.CANCELLED else campaigns.R_PENDING
             if log_id is not None:
