@@ -92,7 +92,18 @@ class ReauthRequired(AuthError):
 
 
 class AccountChanged(AuthError):
-    """The connected account isn't the one the caller expected (it was switched meanwhile)."""
+    """The connected account isn't the one the caller expected (it was switched meanwhile).
+
+    ``expected``: the address the caller asked for; ``connected``: the one connected now.
+    """
+
+    def __init__(self, expected: str, connected: str) -> None:
+        self.expected = expected
+        self.connected = connected
+        super().__init__(
+            f"The connected Outlook account changed to {connected} (this message is from "
+            f"{expected}). Nothing was sent."
+        )
 
 
 class TokenUnavailable(Exception):
@@ -785,10 +796,7 @@ class MicrosoftAuth:
                 and current is not None
                 and normalise_key(current.address) != normalise_key(expected_address)
             ):
-                raise AccountChanged(
-                    f"The connected Outlook account changed to {current.address} (this message "
-                    f"is from {expected_address}). Nothing was sent."
-                )
+                raise AccountChanged(expected_address, current.address)
             try:
                 app = self._app()
                 accounts = app.get_accounts()

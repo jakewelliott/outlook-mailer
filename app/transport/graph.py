@@ -5,7 +5,7 @@ The request body is the whole MIME message base64-encoded (``message.graph_paylo
 ``MicrosoftAuth.get_access_token``, called in a thread because MSAL may renew it over the network.
 With ``expected_sender`` (the From the caller checked) it only hands out a token while that
 address is still the connected account; otherwise (``AccountChanged``) nothing is sent and the
-result is an auth error.
+result is an auth error with ``sender_changed`` set, so the engine names the account change.
 
 How each outcome maps to a ``SendResult`` (the policy is in ``app.transport.base``; the reasons
 for the account-level codes are in docs/DECISIONS.md "Graph responses"):
@@ -62,7 +62,7 @@ from typing import Any
 import httpx
 
 from app.message import check_single_recipient, graph_payload
-from app.msauth import AuthError, MicrosoftAuth, TokenUnavailable
+from app.msauth import AccountChanged, AuthError, MicrosoftAuth, TokenUnavailable
 from app.transport.base import SendResult, Transport
 
 log = logging.getLogger("outlook_mailer.graph")
@@ -226,7 +226,9 @@ class GraphTransport(Transport):
                 token = await asyncio.to_thread(
                     self.msauth.get_access_token, expected_address=expected_sender
                 )
-        except AuthError as exc:  # includes AccountChanged
+        except AccountChanged as exc:  # an AuthError: nothing sent, the engine says why
+            return SendResult.auth(str(exc), sender_changed=(exc.expected, exc.connected))
+        except AuthError as exc:
             return SendResult.auth(str(exc))
         except TokenUnavailable as exc:
             return SendResult.retry(f"Couldn't get a Microsoft token: {exc}")

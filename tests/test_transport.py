@@ -45,6 +45,9 @@ def test_result_constructors() -> None:
     assert u.stop_reason is None
     s = SendResult.unknown("HTTP 500", stop_reason="account blocked")
     assert s.outcome_unknown and s.stop_reason == "account blocked"
+    assert a.sender_changed is None
+    c = SendResult.auth("changed", sender_changed=("a@x.com", "b@x.com"))
+    assert c.auth_error and c.sender_changed == ("a@x.com", "b@x.com") and c.stop_reason is None
 
 
 @pytest.mark.parametrize(
@@ -65,6 +68,8 @@ def test_result_constructors() -> None:
         {"ok": False, "error": "x", "retryable": True, "stop_reason": "blocked"},
         {"ok": True, "stop_reason": "blocked"},
         {"ok": False, "error": "x", "outcome_unknown": True, "stop_reason": ""},
+        {"ok": False, "error": "x", "sender_changed": ("a@x.com", "b@x.com")},
+        {"ok": False, "error": "x", "outcome_unknown": True, "sender_changed": ("a", "b")},
     ],
 )
 def test_inconsistent_results_refused(kwargs: dict[str, object]) -> None:
