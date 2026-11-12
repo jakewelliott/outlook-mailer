@@ -388,3 +388,95 @@ def test_entries_and_raw(tmp_path: Path) -> None:
         Entry("bo@example.com", ""),
     ]
     assert read_raw(tmp_path) == raw
+
+
+def save_by_rename(path: Path, content: bytes) -> None:
+    """What many editors do on save: write a new file, rename it over the old one."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(content)
+    os.replace(tmp, path)
+
+
+@pytest.mark.parametrize("edit", ["replace", "delete"])
+def test_record_retries_on_a_file_replaced_mid_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit: str
+) -> None:
+    """The file is replaced (or deleted) after the record decided to append, so its line goes to
+    the old, unlinked file. The record notices and appends again to the file now there, once."""
+    path = tmp_path / "unsubscribed.txt"
+    path.write_bytes(b"bob@example.com\t2026-11-01\n")
+    calls: list[int] = []
+
+    def hook() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            if edit == "replace":
+                save_by_rename(path, b"bob@example.com\t2026-11-01\ncy@example.com")
+            else:
+                path.unlink()
+
+    monkeypatch.setattr(unsubscribes, "_before_append", hook)
+    assert record_unsubscribe(tmp_path, "ada@example.com", AT) is True
+    assert len(calls) == 2
+    ada = "ada@example.com\t2026-12-01T10:00:05-05:00\n"
+    if edit == "replace":
+        assert lines(tmp_path) == ["bob@example.com\t2026-11-01\n", "cy@example.com\n", ada]
+    else:
+        assert lines(tmp_path) == [ada]
+
+
+def test_record_dedupes_against_the_replacing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry's dedupe reads the new file: if it already holds the address, nothing is added."""
+    path = tmp_path / "unsubscribed.txt"
+    path.write_bytes(b"")
+
+    def hook() -> None:
+        monkeypatch.setattr(unsubscribes, "_before_append", lambda: None)
+        save_by_rename(path, b"ADA@example.com\n")
+
+    monkeypatch.setattr(unsubscribes, "_before_append", hook)
+    assert record_unsubscribe(tmp_path, "ada@example.com", AT) is False
+    assert path.read_bytes() == b"ADA@example.com\n"
+
+
+def test_record_replaced_before_lock_reads_the_new_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replaced between the open and the lock: the old file is never read or written."""
+    path = tmp_path / "unsubscribed.txt"
+    path.write_bytes(b"ada@example.com\n")  # the old file holds the address; the new one doesn't
+    real_lock = unsubscribes._lock
+    locks: list[int] = []
+
+    def lock(fd: int, op: int, deadline: float | None = None) -> None:
+        locks.append(op)
+        if len(locks) == 1:
+            save_by_rename(path, b"bob@example.com\n")
+        real_lock(fd, op, deadline)
+
+    monkeypatch.setattr(unsubscribes, "_lock", lock)
+    assert record_unsubscribe(tmp_path, "ada@example.com", AT) is True
+    assert locks == [fcntl.LOCK_EX, fcntl.LOCK_EX]
+    assert lines(tmp_path) == ["bob@example.com\n", "ada@example.com\t2026-12-01T10:00:05-05:00\n"]
+
+
+def test_record_gives_up_if_the_file_keeps_being_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "unsubscribed.txt"
+    path.write_bytes(b"bob@example.com\n")
+    calls: list[int] = []
+
+    def hook() -> None:
+        calls.append(1)
+        save_by_rename(path, b"bob@example.com\n")
+
+    monkeypatch.setattr(unsubscribes, "_before_append", hook)
+    with pytest.raises(unsubscribes.FileReplaced):
+        record_unsubscribe(tmp_path, "ada@example.com", AT)
+    assert len(calls) == unsubscribes.REPLACE_ATTEMPTS
+    assert issubclass(unsubscribes.FileReplaced, OSError)
+    assert path.read_bytes() == b"bob@example.com\n"  # nothing claimed
+    assert not load_unsubscribed(tmp_path) & address_keys("ada@example.com")
