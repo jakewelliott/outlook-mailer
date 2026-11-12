@@ -9,6 +9,11 @@ string, so tokens survive restarts and can't be reused as unsubscribe tokens (or
 cookie planted from another subdomain is useless without the key. The token check runs as a
 router dependency (``csrf_protect``) because it may need the parsed form body; the Origin check
 runs in the middleware for every unsafe admin request and every admin websocket handshake.
+
+A request whose client disconnects before its body has arrived (Starlette ``ClientDisconnect``
+from any form or body read, e.g. a cut-off CSV upload) ends in ``client_disconnected``: an empty
+``DISCONNECTED_STATUS`` response with the usual headers and one debug line. Every route reads
+its whole form before it writes anything, so nothing is left half-done.
 """
 
 import base64
@@ -43,6 +48,9 @@ UNSUBSCRIBE_HEADERS = {
     "X-Robots-Tag": "noindex, nofollow",
 }
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# A request whose client disconnected mid-body: an empty response the client never sees. 400, not
+# 500: nothing failed on this side (and a 500 would log a traceback for every dropped body).
+DISCONNECTED_STATUS = 400
 
 CSRF_COOKIE = "om_csrf"
 CSRF_FIELD = "csrf_token"
@@ -341,6 +349,13 @@ def forbidden_response(request: Request, exc: Exception) -> Response:
     return PlainTextResponse(
         "Security check failed. Reload the page and try again.", status_code=403
     )
+
+
+def client_disconnected(request: Request, exc: Exception) -> Response:
+    """App exception handler for ``ClientDisconnect``: the client left before its body arrived,
+    so there is nobody to answer. Quiet on purpose: no traceback, nothing from the request."""
+    log.debug("A %s request was dropped before its body arrived.", request.method)
+    return Response(status_code=DISCONNECTED_STATUS)
 
 
 # Every admin router is built with these, so new routes get the checks by default.

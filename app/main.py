@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import ClientDisconnect
 from starlette.responses import Response
 from starlette.types import Scope
 
@@ -33,7 +34,13 @@ from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
 from app.db import Database
 from app.msauth import MicrosoftAuth
-from app.security import CsrfSigner, Forbidden, RequestGuard, forbidden_response
+from app.security import (
+    CsrfSigner,
+    Forbidden,
+    RequestGuard,
+    client_disconnected,
+    forbidden_response,
+)
 from app.sender import Clock, SendWorker, utcnow
 from app.transport import Transport, make_transport
 
@@ -148,6 +155,8 @@ def create_app(
     app.state.unsubscribe_ip_warning = unsubscribe_pages.MissingIpWarning()
     app.add_middleware(RequestGuard, settings=settings, verifier=verifier)
     app.add_exception_handler(Forbidden, forbidden_response)
+    # A body cut off mid-read (any route, e.g. a CSV upload): an empty 400, no traceback.
+    app.add_exception_handler(ClientDisconnect, client_disconnected)
     app.add_exception_handler(ui_send.UploadTooLarge, ui_send.upload_too_large)
 
     # HEAD too, for uptime monitors that probe with it.
