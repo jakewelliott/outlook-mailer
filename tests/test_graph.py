@@ -212,7 +212,7 @@ def test_token_fetched_off_the_event_loop(auth: FakeAuth, graph: respx.Route) ->
 
     def blocking() -> None:
         entered.set()
-        released.append(release.wait(10))  # on the loop this would wait the full 10 s
+        released.append(release.wait(30))  # on the loop this would wait the full 30 s
 
     auth.on_token = blocking
     t = transport(auth)

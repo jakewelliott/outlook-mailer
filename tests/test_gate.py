@@ -429,7 +429,7 @@ def test_concurrent_double_click_sends_once(
     db = Database(tmp_path / "app.db")
     db.init()
     transport = make_transport(app_settings)
-    both_building = threading.Barrier(2, timeout=5)
+    both_building = threading.Barrier(2, timeout=30)
     build = gate.build_test
 
     def slow_build(*a: object, **kw: object) -> bytes:

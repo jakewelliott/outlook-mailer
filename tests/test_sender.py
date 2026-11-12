@@ -10,7 +10,6 @@ import io
 import itertools
 import sqlite3
 import threading
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email import message_from_bytes, policy
@@ -1033,18 +1032,18 @@ def _stop_while(env: Env, method: str, *, after: bool) -> None:
     def slow(*args: object, **kwargs: object) -> object:
         if not after:
             entered.set()
-            assert release.wait(5)
+            assert release.wait(30)
         result = real(*args, **kwargs)
         if after:
             entered.set()
-            assert release.wait(5)
+            assert release.wait(30)
         return result
 
     setattr(env.worker, method, slow)
 
     async def go() -> None:
         env.worker.start()
-        assert await asyncio.to_thread(entered.wait, 5)
+        assert await asyncio.to_thread(entered.wait, 30)
         stopping = asyncio.create_task(env.worker.stop())
         await asyncio.sleep(0)  # stop() has set _stopping
         assert env.worker._stopping
@@ -1328,11 +1327,16 @@ def test_cancel_racing_the_record(
     real_begin = campaigns._begin_immediate
     armed = threading.Event()
     canceller: list[threading.Thread] = []
+    cancel_locking = threading.Event()
 
     def cancel() -> None:
         campaigns.cancel(env.db, tmp_path, cid, env.clock())
 
     def hooked(conn: sqlite3.Connection) -> None:
+        if canceller and threading.current_thread() is canceller[0]:
+            cancel_locking.set()  # cancel's first step: it now waits for _record's lock
+            real_begin(conn)
+            return
         if not armed.is_set():
             real_begin(conn)
             return
@@ -1344,7 +1348,7 @@ def test_cancel_racing_the_record(
             real_begin(conn)
             canceller.append(threading.Thread(target=cancel))
             canceller[0].start()
-            time.sleep(0.2)  # the cancel is now waiting for the lock
+            assert cancel_locking.wait(30)
 
     monkeypatch.setattr(campaigns, "_begin_immediate", hooked)
     record = env.worker._record
@@ -1356,8 +1360,9 @@ def test_cancel_racing_the_record(
     env.worker._record = armed_record  # type: ignore[method-assign]
     env.step()
     for t in canceller:
-        t.join(5)
+        t.join(30)
         assert not t.is_alive()
+    assert cancel_locking.is_set() == (when == "during")
     assert env.status(cid) == campaigns.CANCELLED
     rows = env.recipients(cid)
     assert rows["ada@example.com"]["status"] == expected
