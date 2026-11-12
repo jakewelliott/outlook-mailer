@@ -92,9 +92,7 @@ class FakeAuth(MicrosoftAuth):
         if expected_address is not None and normalise_key(self.account.address) != normalise_key(
             expected_address
         ):
-            raise AccountChanged(
-                f"The connected Outlook account changed to {self.account.address}."
-            )
+            raise AccountChanged(expected_address, self.account.address)
         if isinstance(self.token, BaseException):
             raise self.token
         return self.token
@@ -368,6 +366,7 @@ def test_expected_sender_checked_with_the_token(auth: FakeAuth, graph: respx.Rou
     auth.account = OTHER
     result = send_as(transport(auth), ME.address)
     assert result.auth_error and "account changed" in (result.error or "")
+    assert result.sender_changed == (ME.address, OTHER.address)
     assert graph.call_count == 2  # nothing sent
 
 
@@ -755,10 +754,58 @@ def test_worker_account_switched_just_before_the_token(tmp_path: Path, graph: re
     env.drive()
     c = env.campaign_row(cid)
     assert c.status == campaigns.STOPPED_ERROR
-    assert c.last_error and "account changed" in c.last_error
+    # The account change is named, not blamed on Microsoft (fix A4).
+    assert c.last_error == campaigns.sender_changed_message(ME.address, OTHER.address)
+    assert not c.last_error.startswith(sender.AUTH_STOP_MESSAGE)
     assert not graph.called and env.auth.expected == [ME.address]
     row = env.recipient(cid, "ada@example.com")
     assert row["status"] == campaigns.R_PENDING and row["attempts"] == 0
+    assert "Outlook account changed to other@outlook.com" in row["last_error"]
+
+    # Reconnected as the original account: resume sends to everyone, ada included.
+    env.auth.on_token = None
+    env.auth.account = ME
+    campaigns.resume(env.db, cid, env.clock(), transport="graph")
+    env.drive()
+    assert env.campaign_row(cid).status == campaigns.FINISHED
+    assert env.recipient(cid, "ada@example.com")["status"] == campaigns.R_SENT
+    assert graph.call_count == 2
+
+
+def test_test_send_account_switched_just_before_the_token(
+    tmp_path: Path, graph: respx.Route
+) -> None:
+    """A test send whose account changed before the token: nothing sent, and the error names
+    the account change (no "Microsoft won't take mail" prefix)."""
+    graph.mock(return_value=httpx.Response(202))
+    env = GraphEnv(tmp_path)
+
+    def switch() -> None:
+        env.auth.account = OTHER
+
+    env.auth.on_token = switch
+
+    async def go() -> gate.SentTest:
+        try:
+            return await gate.send_test(
+                env.db,
+                env.settings,
+                env.transport,
+                draft_id="d" * 32,
+                content=CONTENT,
+                values={"first_name": "Ada", "email": "ada@example.com"},
+                sender=ME,
+                clock=env.clock,
+            )
+        finally:
+            await env.transport.aclose()
+
+    test = asyncio.run(go())
+    assert test.ok is False and not test.outcome_unknown and not graph.called
+    assert test.error == (
+        f"The connected Outlook account changed to {OTHER.address} (this message is from "
+        f"{ME.address}). Nothing was sent."
+    )
 
 
 def test_worker_reauth_stops_the_campaign(tmp_path: Path, graph: respx.Route) -> None:
@@ -770,6 +817,7 @@ def test_worker_reauth_stops_the_campaign(tmp_path: Path, graph: respx.Route) ->
     assert c.status == campaigns.STOPPED_ERROR
     assert c.last_error and c.last_error.startswith(sender.AUTH_STOP_MESSAGE)
     assert "expired or was revoked" in c.last_error
+    assert c.last_error.endswith(sender.AUTH_STOP_AFTER)  # an ordinary auth stop, unchanged
     assert not graph.called
     assert env.recipient(cid, "ada@example.com")["attempts"] == 0
     # Fixed: resume sends.

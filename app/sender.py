@@ -781,10 +781,15 @@ class SendWorker:
                 recipient(
                     status=waiting, attempts=row.attempts, last_error=error, next_attempt_at=None
                 )
-                add_event(conn, c.id, now, f"{who}: not sent, sign-in problem: {error}")
-                self._stop(
-                    conn, c.id, status, now, f"{AUTH_STOP_MESSAGE} {error} {AUTH_STOP_AFTER}"
-                )
+                if result.sender_changed is not None:
+                    # The account was switched after the check in _attempt: not Microsoft's
+                    # refusal, so the same reason as that check gives.
+                    add_event(conn, c.id, now, f"{who}: not sent: {error}")
+                    reason = campaigns.sender_changed_message(*result.sender_changed)
+                else:
+                    add_event(conn, c.id, now, f"{who}: not sent, sign-in problem: {error}")
+                    reason = f"{AUTH_STOP_MESSAGE} {error} {AUTH_STOP_AFTER}"
+                self._stop(conn, c.id, status, now, reason)
                 return
 
             if result.throttled:

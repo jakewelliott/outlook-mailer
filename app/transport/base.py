@@ -55,6 +55,9 @@ class SendResult:
     - ``auth_error``: the sign-in is missing, expired or revoked, or the account was refused
       before anything was sent. Not retryable: the engine stops the campaign until Jake fixes it,
       and the recipient is sent on resume.
+      With ``sender_changed`` (``(was, now)``, only allowed here) the reason is that the
+      connected Outlook account changed from ``was`` to ``now`` since the caller checked it, so
+      the engine says that instead of blaming Microsoft.
     - otherwise a permanent failure for this recipient (e.g. Graph rejects the message).
 
     At most one of ``retryable``, ``outcome_unknown`` and ``auth_error`` is set on a failure.
@@ -68,6 +71,7 @@ class SendResult:
     auth_error: bool = False
     outcome_unknown: bool = False
     stop_reason: str | None = None
+    sender_changed: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.ok and (
@@ -82,6 +86,8 @@ class SendResult:
             raise ValueError("retry_after is a non-negative delay for retryable failures only")
         if self.stop_reason is not None and (not self.outcome_unknown or not self.stop_reason):
             raise ValueError("stop_reason is a non-empty reason for unknown outcomes only")
+        if self.sender_changed is not None and not self.auth_error:
+            raise ValueError("sender_changed is for auth errors only")
 
     @property
     def throttled(self) -> bool:
@@ -105,8 +111,8 @@ class SendResult:
         return cls(ok=False, error=error)
 
     @classmethod
-    def auth(cls, error: str) -> "SendResult":
-        return cls(ok=False, auth_error=True, error=error)
+    def auth(cls, error: str, sender_changed: tuple[str, str] | None = None) -> "SendResult":
+        return cls(ok=False, auth_error=True, error=error, sender_changed=sender_changed)
 
 
 class Transport(ABC):
