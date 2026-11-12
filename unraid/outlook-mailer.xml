@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<!--
+  Unraid Docker template for outlook-mailer. Install (see README "Deploy on Unraid"):
+    wget -O /boot/config/plugins/dockerMan/templates-user/my-outlook-mailer.xml \
+      https://raw.githubusercontent.com/jakewelliott/outlook-mailer/main/unraid/outlook-mailer.xml
+  then Docker > Add Container > Template: outlook-mailer. Never commit a copy with real values.
+-->
+<Container version="2">
+  <Name>outlook-mailer</Name>
+  <!-- To pin a release instead of following main, use e.g. ghcr.io/jakewelliott/outlook-mailer:1.0.0 -->
+  <Repository>ghcr.io/jakewelliott/outlook-mailer:latest</Repository>
+  <Registry>https://github.com/jakewelliott/outlook-mailer/pkgs/container/outlook-mailer</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/jakewelliott/outlook-mailer/issues</Support>
+  <Project>https://github.com/jakewelliott/outlook-mailer</Project>
+  <Overview>Sends a rate-limited Christmas email campaign from a free personal @outlook.com account through Microsoft Graph: upload a CSV, write the message in Markdown, preview, send a test to yourself, then send one email per recipient with a CAN-SPAM footer and one-click unsubscribe. Reached only through a Cloudflare Tunnel protected by Cloudflare Access; the LAN port shows "Access denied" except for /healthz, /u/* and /img/*. Setup guide: README in the project repository. Before the first start: mkdir -p /mnt/user/appdata/outlook-mailer and chown 99:100 it (the container runs as nobody:users). Pause a running send before stopping or updating the container, editing and applying its settings, stopping the array or rebooting: Unraid's Stop button, updates and array stop use the global Settings &gt; Docker &gt; Docker Stop Timeout (default 10 s), which overrides --stop-timeout, so an email in flight can be cut off (it is then marked interrupted, never sent twice). Raising that global value to 30 or more is an option, but it applies to every container on the server. Keep the Extra Parameters --stop-timeout=30: it covers Restart and a plain docker stop. To pin a release, change the Repository tag from latest to e.g. 1.0.0.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <!-- The admin pages only work through Cloudflare Access, so the WebUI link is the public address.
+       Change it if PUBLIC_BASE_URL is different. -->
+  <WebUI>https://the-calico-barn.jakewelliott.com/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/jakewelliott/outlook-mailer/main/unraid/outlook-mailer.xml</TemplateURL>
+  <Icon/>
+  <!-- Docker's default stop timeout is 10 s. Graph request budget 12 s < SHUTDOWN_GRACE_SECONDS 15 s < 30 s.
+       Covers Unraid's Restart and a plain docker stop only: Stop, updates and array stop pass the global
+       Settings > Docker > Docker Stop Timeout (default 10 s), which overrides this. Pause a send first. -->
+  <ExtraParams>--stop-timeout=30</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>A Cloudflare Tunnel (cloudflared) routing the public hostname to http://SERVER-LAN-IP:8765, a Cloudflare Access application with a Bypass for /u/*, /img/* and /healthz (docs/cloudflare.md), and an Entra app registration (docs/entra-setup.md).</Requires>
+
+  <Config Name="Web UI port" Target="8765" Default="8765" Mode="tcp" Description="Host port for the app. The Cloudflare tunnel's Service URL must use this port (http://SERVER-LAN-IP:8765)." Type="Port" Display="always" Required="true" Mask="false">8765</Config>
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/outlook-mailer" Mode="rw" Description="All state: app.db (sends, send log, settings), unsubscribed.txt (opt-outs, back this up), msal_cache.json (Outlook sign-in), uploads/ (CSVs until a send ends), outbox/ (mock mode). Must be owned by 99:100: chown 99:100 /mnt/user/appdata/outlook-mailer" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/outlook-mailer</Config>
+
+  <Config Name="PUBLIC_BASE_URL" Target="PUBLIC_BASE_URL" Default="" Mode="" Description="Required. Public https address of the app through Cloudflare, e.g. https://the-calico-barn.jakewelliott.com (a host name, no path, query or IPv6 address; a trailing slash is removed). Used in unsubscribe links, image URLs and Message-IDs. Changing it breaks links in emails already sent." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="UNSUBSCRIBE_SECRET" Target="UNSUBSCRIBE_SECRET" Default="" Mode="" Description="Required. Random string, at least 32 characters (generate: openssl rand -hex 32). Signs unsubscribe links and admin form tokens. Changing it invalidates every unsubscribe link already sent. Keep a copy in your password manager." Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="MS_CLIENT_ID" Target="MS_CLIENT_ID" Default="" Mode="" Description="Required when MAIL_TRANSPORT=graph (the default). Application (client) ID of the Entra app registration (docs/entra-setup.md). Not a secret; there is no client secret." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="CF_ACCESS_TEAM_DOMAIN" Target="CF_ACCESS_TEAM_DOMAIN" Default="" Mode="" Description="Required unless AUTH_DISABLED=1. Cloudflare Zero Trust team domain as a bare host name, e.g. jakewelliott.cloudflareaccess.com (Zero Trust > Settings > Team name and domain)." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="CF_ACCESS_AUD" Target="CF_ACCESS_AUD" Default="" Mode="" Description="Required unless AUTH_DISABLED=1. Application Audience (AUD) Tag of the whole-site Cloudflare Access application (not the bypass one)." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="TOKEN_CACHE_KEY" Target="TOKEN_CACHE_KEY" Default="" Mode="" Description="Recommended. Fernet key (44 characters, url-safe base64 of 32 bytes) that encrypts the saved Outlook sign-in. Generate: openssl rand -base64 32 | tr '+/' '-_'. Changing or losing it means connecting Outlook again. Keep a copy in your password manager. Empty: stored unencrypted (mode 0600)." Type="Variable" Display="always" Required="false" Mask="true"/>
+
+  <Config Name="MAIL_TRANSPORT" Target="MAIL_TRANSPORT" Default="graph" Mode="" Description="graph (real sending through Microsoft Graph) or mock (writes .eml files to /data/outbox, never contacts Microsoft). A send started in one mode is never sent in the other." Type="Variable" Display="advanced" Required="false" Mask="false">graph</Config>
+  <Config Name="SEND_RATE_PER_MINUTE" Target="SEND_RATE_PER_MINUTE" Default="6" Mode="" Description="Emails per minute (one every 60/N seconds). Positive whole number. Default 6." Type="Variable" Display="advanced" Required="false" Mask="false">6</Config>
+  <Config Name="DAILY_SEND_CAP" Target="DAILY_SEND_CAP" Default="250" Mode="" Description="Most emails (tests included) in any rolling 24 hours; the send pauses and resumes by itself. Positive whole number. Default 250." Type="Variable" Display="advanced" Required="false" Mask="false">250</Config>
+  <Config Name="MAX_RECIPIENTS" Target="MAX_RECIPIENTS" Default="2000" Mode="" Description="Most rows accepted in an uploaded CSV. Positive whole number. Default 2000." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
+  <Config Name="MAX_UPLOAD_MB" Target="MAX_UPLOAD_MB" Default="5" Mode="" Description="Largest CSV upload in MB. Positive whole number. Default 5." Type="Variable" Display="advanced" Required="false" Mask="false">5</Config>
+  <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Time zone for times shown in the app and written to unsubscribed.txt. Default America/New_York." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+  <Config Name="LOG_LEVEL" Target="LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG, INFO, WARNING, ERROR or CRITICAL. Default INFO." Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+  <Config Name="FORWARDED_ALLOW_IPS" Target="FORWARDED_ALLOW_IPS" Default="*" Mode="" Description="Comma-separated IPs/CIDRs trusted for X-Forwarded-For/-Proto (read by uvicorn). Default * (any). May be tightened to the tunnel's address or Docker subnet. Nothing security-related depends on it." Type="Variable" Display="advanced" Required="false" Mask="false">*</Config>
+  <Config Name="MS_AUTHORITY" Target="MS_AUTHORITY" Default="https://login.microsoftonline.com/consumers" Mode="" Description="Microsoft sign-in authority. Leave as is for @outlook.com accounts." Type="Variable" Display="advanced" Required="false" Mask="false">https://login.microsoftonline.com/consumers</Config>
+  <Config Name="AUTH_DISABLED" Target="AUTH_DISABLED" Default="0" Mode="" Description="1 turns off the Cloudflare Access check on admin pages (anyone on the LAN could use the app). Local testing only. Default 0." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="DATA_DIR" Target="DATA_DIR" Default="/data" Mode="" Description="Data folder inside the container. Leave at /data (the Appdata path above is mounted there)." Type="Variable" Display="advanced" Required="false" Mask="false">/data</Config>
+  <Config Name="PORT" Target="PORT" Default="8765" Mode="" Description="Port the app listens on inside the container. Leave at 8765; if changed, the Web UI port's container port must change too." Type="Variable" Display="advanced" Required="false" Mask="false">8765</Config>
+</Container>

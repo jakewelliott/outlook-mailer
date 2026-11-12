@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "outlook-mailer"
-version = "0.1.0"
+version = "1.0.0"
 description = "Small web app that sends a rate-limited Markdown email campaign from a personal Outlook.com account via Microsoft Graph."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

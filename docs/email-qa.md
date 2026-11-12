@@ -43,7 +43,8 @@ and write the results in the table at the end.
    (2 emails). Check the Gmail copy: headers as in step 6, rendering in Gmail web and the Gmail app, and whether
    Gmail shows its own *Unsubscribe* next to the sender name (Gmail only does that for some senders, sometimes
    only after a few emails, so "not yet" is a normal answer). Clicking the footer **Unsubscribe** link opens the
-   unsubscribe page (stage 13; until then a "not found" page, which is expected).
+   confirmation page; it records nothing until you type the address and press the button (if you do, that
+   address is in `unsubscribed.txt` from then on).
 9. **Edit check** (on a new upload of the list, since each upload is sent once): change one word and save; the
    compose page says *The message changed since your last test* and the start page refuses until a new test is
    sent.
@@ -124,10 +125,10 @@ Footer (CAN-SPAM)
 - [ ] Business name, full postal address (each line on its own line), "This message is an advertisement.",
       the "why you're receiving this" line, and the Unsubscribe link are all visible and readable.
 - [ ] Phone/address text is not turned into blue auto-links (iOS).
-- [ ] Clicking **Unsubscribe** opens the confirmation page (stage 13) on `PUBLIC_BASE_URL/u/...`; it does not
+- [ ] Clicking **Unsubscribe** opens the confirmation page on `PUBLIC_BASE_URL/u/...` (no sign-in); it does not
       unsubscribe you until you type the address the email was sent to and press the button.
 - [ ] The mail app's own "Unsubscribe" button (Gmail, Outlook.com, Apple Mail) appears once the
-      List-Unsubscribe headers are in place (stage 9/12). It may take a few sends from the account before Gmail
+      List-Unsubscribe headers are present (check step 6). It may take a few sends from the account before Gmail
       shows it.
 
 Inbox and technical

@@ -27,9 +27,9 @@ template that works in all major email clients. GitHub Actions builds the image 
 
 | Name | Required | Default | Purpose |
 |---|---|---|---|
-| `PUBLIC_BASE_URL` | yes | none | Public https address, e.g. `https://the-calico-barn.jakewelliott.com`. Used for unsubscribe links and image URLs in emails. No trailing slash. |
+| `PUBLIC_BASE_URL` | yes | none | Public https address, e.g. `https://the-calico-barn.jakewelliott.com`. Used for unsubscribe links, image URLs and the Message-ID host. A trailing slash is removed; no query or fragment; a host name, not an IPv6 address. |
 | `UNSUBSCRIBE_SECRET` | yes | none | Random string, 32+ chars. HMAC key for unsubscribe tokens. Changing it breaks links in already-sent emails. |
-| `MS_CLIENT_ID` | yes for real sending | none | Entra app (client) ID. Public client, no secret. |
+| `MS_CLIENT_ID` | when `MAIL_TRANSPORT=graph` (the default) | none | Entra app (client) ID. Public client, no secret. |
 | `MS_AUTHORITY` | no | `https://login.microsoftonline.com/consumers` | Leave as-is for @outlook.com. |
 | `CF_ACCESS_TEAM_DOMAIN` | yes unless `AUTH_DISABLED=1` | none | e.g. `jakewelliott.cloudflareaccess.com` |
 | `CF_ACCESS_AUD` | yes unless `AUTH_DISABLED=1` | none | Application Audience (AUD) tag of the Cloudflare Access app. |
@@ -39,7 +39,7 @@ template that works in all major email clients. GitHub Actions builds the image 
 | `DAILY_SEND_CAP` | no | `250` | Rolling 24 h cap. The worker pauses and resumes on its own. |
 | `MAX_RECIPIENTS` | no | `2000` | Upload row limit. |
 | `MAX_UPLOAD_MB` | no | `5` | CSV size limit. |
-| `TOKEN_CACHE_KEY` | no | none | Fernet key to encrypt the token cache. |
+| `TOKEN_CACHE_KEY` | no (recommended) | none | Fernet key to encrypt the token cache (url-safe base64 of 32 bytes, 44 characters). |
 | `DATA_DIR` | no | `/data` | |
 | `PORT` | no | `8765` | |
 | `TZ` | no | `America/New_York` | |
@@ -221,7 +221,7 @@ Stage 5 (`app/merge.py`) leaves three hazards for stage 6. Each needs a test.
 ## Stages
 
 Each stage: one coding agent, one reviewer, one commit to `main`. Tests run in Docker (the host has no Python):
-`docker run --rm -v "$PWD":/src -w /src python:3.12-slim sh -c "pip install -q -e '.[dev]' && ruff check . && pytest -q"`.
+`docker run --rm -v "$PWD":/src -w /src python:3.12-slim sh -c "pip install -q --root-user-action=ignore -e '.[dev]' && ruff check . && ruff format --check . && pytest -q"`.
 
 | # | Stage | Acceptance highlights |
 |---|---|---|
@@ -241,3 +241,28 @@ Each stage: one coding agent, one reviewer, one commit to `main`. Tests run in D
 | 14 | README (decisions + fresh-clone setup), `docs/entra-setup.md`, `docs/cloudflare.md`, `unraid/outlook-mailer.xml`, v1.0.0 | someone can set up from a fresh clone using only the README; the Unraid template sets `--stop-timeout=30` in Extra Parameters (see DECISIONS "Shutdown timing") |
 
 Stages 1–10 and 13 need no Microsoft account (`MAIL_TRANSPORT=mock`, `AUTH_DISABLED=1` in tests).
+
+As built (stage 14, 2026-11-12; docs and release prep only, no app behaviour changed):
+
+- `README.md` restructured into the complete guide: what it does, decisions in brief (pointing to DECISIONS),
+  setup from a fresh clone in order (Entra, secrets, Cloudflare, data folder owned by 99:100, Unraid template or
+  Compose, first Outlook sign-in, optional mock dry run, first test and real send, post-deploy checks), secrets,
+  backups and restoring, operating reminders, updating (image tags), stopping safely (12 s < 15 s < 30 s; Unraid's Stop, updates and array
+  stop use the global Docker Stop Timeout, default 10 s, so "pause a running send first" is the rule),
+  configuration, how it works, development (test command with `--root-user-action=ignore` and the clean-up of
+  root-owned caches), credits.
+- `docs/cloudflare.md` (new): tunnel route to `http://<server-LAN-IP>:8765` (tunnel container on a bridge network;
+  **Protect with Access** off), whole-site Access application with an Allow policy, a separate bypass application
+  for `u/*`, `img/*` and `healthz` (with a `curl` check that `POST /u/x/one-click` is covered, and the fallback
+  `u/*/one-click`), where to find the team domain and AUD tag, Bot Fight Mode off (it can't be skipped by rules),
+  skip rule and configuration rule for `/u/*` (Super Bot Fight Mode, WAF, Browser Integrity Check, Under Attack),
+  `CF-Connecting-IP` / "Remove visitor IP headers", post-setup checks. Labels checked against Cloudflare's docs on
+  2026-11-12; unconfirmed ones marked "(not verified)".
+- `unraid/outlook-mailer.xml` (new): Community Applications format, `ghcr.io/jakewelliott/outlook-mailer:latest`,
+  port 8765, `/mnt/user/appdata/outlook-mailer` → `/data`, `--stop-timeout=30` in Extra Parameters, every
+  variable from `app/config.py` plus `FORWARDED_ALLOW_IPS`; the five required ones marked required, the two
+  secrets masked, optional ones prefilled with the app's defaults under advanced. Checked as well-formed XML with
+  `xml.etree` in a throwaway container, and its variable names against `app/config.py`.
+- `docs/email-qa.md`: stale "stage 13" notes replaced. `pyproject.toml` version 1.0.0.
+- Image tags: the git tag `v1.0.0` produces image tags `1.0.0` and `1.0` (docker/metadata-action semver strips
+  the `v`), so a pinned image is `ghcr.io/jakewelliott/outlook-mailer:1.0.0`, not `:v1.0.0`.
