@@ -612,8 +612,9 @@ A background worker in the app sends one email at a time:
   Sent Items and send it yourself if needed). That happens when the app is stopped or crashes mid-send ("interrupted
   during send — ..."), and when the connection fails after the email was handed over: a timeout waiting for
   Microsoft's answer, the connection dropping mid-answer, or a 500/502/504 server error ("outcome unknown — ..."),
-  even when that error also says the account can't send (the send then stops as well). Only a refusal (a 4xx
-  answer, or 429/503 busy) is taken as proof that nothing went out.
+  even when that error also says the account can't send (the send then stops as well). Among Microsoft's answers, only a
+  refusal (a 4xx, or 429/503/509 busy) is taken as proof that nothing went out; failures before the request is sent
+  (can't connect, can't get a token) also mean nothing went out, and are retried.
   These count against the daily limit and as failed attempts. On a normal shutdown the worker waits up to 15 s for
   an in-flight email to finish first (see [Stopping and restarting safely](#stopping-and-restarting-safely)).
   Everything else carries on after a restart.
