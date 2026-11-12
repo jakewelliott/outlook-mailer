@@ -26,6 +26,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # Starlette's TestClient uses httpx2 when installed (plain httpx is deprecated there). Tests only.
+    "httpx2>=2.16,<3",
     "pytest>=9.2,<10",
     "respx>=0.23,<1",
     "ruff>=0.17.4,<0.18",

@@ -305,7 +305,10 @@ def test_csrf_token_bound_to_cookie_and_user(client: TestClient) -> None:
     token = csrf_session(client, h)
     other_user = auth(make_token(email="mallory@example.com"))
     assert post(client, other_user, data={"csrf_token": token}).status_code == 403
-    client.cookies.set(CSRF_COOKIE, "A" * 43)
+    # Replace the server's cookie (same host and path) rather than adding a second, domainless
+    # one: with two, which one is sent depends on the HTTP client's cookie ordering.
+    client.cookies.set(CSRF_COOKIE, "A" * 43, domain=httpx.URL(BASE).host, path="/")
+    assert [c.value for c in client.cookies.jar if c.name == CSRF_COOKIE] == ["A" * 43]
     assert post(client, h, data={"csrf_token": token}).status_code == 403
 
 
