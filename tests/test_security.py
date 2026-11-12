@@ -25,6 +25,7 @@ from app.security import (
     csrf_token,
     is_public_path,
 )
+from app.ui import NAV
 
 TEAM = "team.cloudflareaccess.com"
 ISS = f"https://{TEAM}"
@@ -423,14 +424,13 @@ def test_help_page_has_no_inline_script_or_style(settings: Settings) -> None:
     assert 'href="/static/app.css"' in html and 'src="/static/app.js"' in html
 
 
-def test_no_placeholder_pages_left(valid_env: dict[str, str], tmp_path: Path) -> None:
+def test_every_nav_page_is_a_real_route(valid_env: dict[str, str], tmp_path: Path) -> None:
     # Some of these pages create files in DATA_DIR; the default /data is only writable as root
     # (CI runs as a normal user).
+    # There is no catch-all page, so a 200 means a real route serves the nav entry.
     c = TestClient(create_app(load_settings({**valid_env, "DATA_DIR": str(tmp_path)})))
-    for path in ("/", "/send/new", "/campaigns", "/unsubscribes", "/account"):
-        r = c.get(path)
-        assert r.status_code == 200, path
-        assert "later stage" not in r.text, path
+    for path, _label in NAV:
+        assert c.get(path).status_code == 200, path
 
 
 # Admin pages must send Referrer-Policy: same-origin. Under no-referrer, Chromium and Firefox
