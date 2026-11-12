@@ -708,8 +708,11 @@ class SendWorker:
         it again after an error, and the first write may have committed before the error was
         raised. A transport outcome is written only while the recipient is still ``sending``
         with this ``log_id`` as its latest ``send_log`` row (only ``_record`` moves it off
-        ``sending``); a pre-send one only while the recipient is ``pending`` with the attempts
-        it had when planned (a recorded build failure counts one)."""
+        ``sending``, assuming one app process: ``--workers 1`` in one container; a second
+        instance on the same DB could, via its startup ``recover_interrupted``, make a live
+        worker's real "sent" be dropped, still without a resend); a pre-send one only while
+        the recipient is ``pending`` with the attempts it had when planned (a recorded build
+        failure counts one)."""
         attempts = row.attempts + 1
         who = f"Row {row.row_no} ({row.email})"
         with self.db.connect() as conn:
@@ -745,15 +748,25 @@ class SendWorker:
                     if result.retryable
                     else "permanent failure"
                 )
-                log.info(
-                    "Row %s of send #%s was not sent (the send is now %s, the row %s); not "
-                    "recording its %s.",
-                    row.row_no,
-                    c.id,
-                    status,
-                    current["status"],
-                    kind,
-                )
+                if status == campaigns.SENDING:
+                    # Still sending, so no pause or cancel: the row moved on because this
+                    # outcome was already written (a replay after a write that committed).
+                    log.info(
+                        "The %s for row %s of send #%s is already saved; not applying it again.",
+                        kind,
+                        row.row_no,
+                        c.id,
+                    )
+                else:
+                    log.info(
+                        "Row %s of send #%s was not sent (the send is now %s, the row %s); not "
+                        "recording its %s.",
+                        row.row_no,
+                        c.id,
+                        status,
+                        current["status"],
+                        kind,
+                    )
                 return
             final = status in campaigns.FINAL
             waiting = campaigns.R_NOT_SENT if status == campaigns.CANCELLED else campaigns.R_PENDING
