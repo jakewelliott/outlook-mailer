@@ -735,14 +735,24 @@ class SendWorker:
                 or current["status"] != campaigns.R_PENDING
                 or current["attempts"] != row.attempts
             ):
+                # Not result.error: a build error's text can contain the recipient's address.
+                kind = (
+                    "signed out"
+                    if result.signed_out
+                    else "sign-in problem"
+                    if result.auth_error
+                    else "retryable failure"
+                    if result.retryable
+                    else "permanent failure"
+                )
                 log.info(
                     "Row %s of send #%s was not sent (the send is now %s, the row %s); not "
-                    "recording: %s",
+                    "recording its %s.",
                     row.row_no,
                     c.id,
                     status,
                     current["status"],
-                    result.error,
+                    kind,
                 )
                 return
             final = status in campaigns.FINAL
