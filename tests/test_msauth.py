@@ -65,7 +65,8 @@ def b64(data: dict[str, Any]) -> str:
 
 
 def token_response(tid: str = CONSUMER_TENANT_ID, username: str = "jake@outlook.com") -> dict:
-    claims = {"tid": tid, "oid": "0000-oid", "preferred_username": username, "name": "Jake"}
+    oid = "oid-" + username  # one ID per account, as Microsoft gives
+    claims = {"tid": tid, "oid": oid, "preferred_username": username, "name": "Jake"}
     return {
         "token_type": "Bearer",
         "scope": "Mail.Send User.Read",
@@ -73,7 +74,7 @@ def token_response(tid: str = CONSUMER_TENANT_ID, username: str = "jake@outlook.
         "access_token": ACCESS_TOKEN,
         "refresh_token": REFRESH_TOKEN,
         "id_token_claims": claims,
-        "client_info": b64({"uid": "0000-oid", "utid": tid}),
+        "client_info": b64({"uid": oid, "utid": tid}),
     }
 
 
@@ -300,6 +301,10 @@ def test_success_stores_sender_and_cache(
     assert status.sender == msauth.Sender("Jake@outlook.com", "Jake Elliott")
     assert status.notice == "Connected as Jake@outlook.com."
     assert get_sender(auth.db) == status.sender
+    # Stored with the account it belongs to, which load checks against the cache.
+    [account] = msauth._accounts(auth._cache)
+    stored = get_sender(auth.db)
+    assert stored is not None and stored.account_id == account["home_account_id"]
     assert me.calls.last.request.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
     path = tmp_path / CACHE_FILE
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -1011,7 +1016,8 @@ def test_page_not_configured(tmp_path: Path, scenario: Scenario) -> None:
 # --- saving a sign-in fails ----------------------------------------------------------------------
 
 NEW_REFRESH = "M.C5_BAY.NEW-REFRESH-TOKEN-secret"
-OLD_SENDER = msauth.Sender("Jake@outlook.com", "Jake Elliott")
+# The default fake account: the first sign-in of every test (the "old" one when a test reconnects).
+JAKE_SENDER = msauth.Sender("Jake@outlook.com", "Jake Elliott")
 NEW_SENDER = msauth.Sender("new@outlook.com", "New Person")
 
 
@@ -1081,6 +1087,21 @@ class SignalledLock:
         return self.lock.__exit__(*exc)
 
 
+def watch_join(thread: threading.Thread) -> tuple[threading.Event, list[float | None]]:
+    """Wrap ``thread.join``: the event is set when someone starts to join it, and the list gets
+    each call's timeout."""
+    joining, timeouts = threading.Event(), []
+    real_join = thread.join
+
+    def join(timeout: float | None = None) -> None:
+        timeouts.append(timeout)
+        joining.set()
+        real_join(timeout)
+
+    thread.join = join  # type: ignore[method-assign]
+    return joining, timeouts
+
+
 def restart(auth: MicrosoftAuth) -> MicrosoftAuth:
     """A new instance on the same DATA_DIR and database, as after an app restart."""
     return MicrosoftAuth(auth.settings, auth.db)
@@ -1111,15 +1132,15 @@ def test_commit_file_failure_keeps_old_sign_in(
         scenario.release.set()
         finish(thread)
     status = auth.status()
-    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert status.state == "signed_in" and status.sender == JAKE_SENDER
     assert "couldn't be saved in DATA_DIR" in (status.error or "")
     assert auth._cache is old_cache and auth._client is old_client
     assert stored == []  # the database isn't touched
     assert (tmp_path / CACHE_FILE).read_bytes() == before
-    assert get_sender(auth.db) == OLD_SENDER
+    assert get_sender(auth.db) == JAKE_SENDER
     assert auth.get_access_token().startswith("silent-")
     again = restart(auth)
-    assert again.status().state == "signed_in" and again.sender() == OLD_SENDER
+    assert again.status().state == "signed_in" and again.sender() == JAKE_SENDER
     assert again.get_access_token().startswith("silent-")
     assert not thread_errors
 
@@ -1156,16 +1177,16 @@ def test_commit_db_failure_keeps_old_sign_in(
         auth.start_sign_in()
         wait_done(auth)
     status = auth.status()
-    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert status.state == "signed_in" and status.sender == JAKE_SENDER
     assert "couldn't be saved in the database" in (status.error or "")
     assert auth._cache is old_cache and auth._client is old_client
     raw = (tmp_path / CACHE_FILE).read_text()
     assert REFRESH_TOKEN in raw and NEW_REFRESH not in raw  # the old sign-in is back on disk
     assert auth.get_access_token().startswith("silent-")
-    assert get_sender(auth.db) == OLD_SENDER
+    assert get_sender(auth.db) == JAKE_SENDER
     # After a restart: the previous account, and the file and database agree.
     again = restart(auth)
-    assert again.status().state == "signed_in" and again.sender() == OLD_SENDER
+    assert again.status().state == "signed_in" and again.sender() == JAKE_SENDER
     saved = again._cache.serialize()
     assert REFRESH_TOKEN in saved and NEW_REFRESH not in saved
     assert again.get_access_token().startswith("silent-")
@@ -1212,7 +1233,7 @@ def test_commit_restore_failure_deletes_the_file(
     assert len(writes) == 2
     assert not (tmp_path / CACHE_FILE).exists()
     assert "couldn't be saved" in (auth.status().error or "")
-    assert get_sender(auth.db) == OLD_SENDER
+    assert get_sender(auth.db) == JAKE_SENDER
     # Not signed in as the new account under the old address: signed out.
     again = restart(auth)
     assert again.status().state == "signed_out" and again.sender() is None
@@ -1257,7 +1278,7 @@ def test_commit_restore_and_delete_failure_is_contained(
     assert len(writes) == 2 and len(deletes) == 1
     assert not thread_errors
     status = auth.status()
-    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert status.state == "signed_in" and status.sender == JAKE_SENDER
     assert "couldn't be saved in the database" in (status.error or "")
     assert auth._cache is old_cache
     assert auth._slot is None
@@ -1273,6 +1294,8 @@ def test_cancel_during_commit_is_refused(
     me: respx.Route,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The first sign-in (no previous one), as ``JAKE_SENDER``: once it is being saved a cancel
+    is refused and the save completes."""
     thread_errors = catch_thread_errors(monkeypatch)
     auth = make_auth(tmp_path)
     entered, release = gate_store(monkeypatch)
@@ -1285,19 +1308,20 @@ def test_cancel_during_commit_is_refused(
     finish(thread)
     status = auth.status()
     assert status.state == "signed_in" and status.notice == "Connected as Jake@outlook.com."
-    assert get_sender(auth.db) == OLD_SENDER
-    assert restart(auth).sender() == OLD_SENDER
+    assert get_sender(auth.db) == JAKE_SENDER
+    assert restart(auth).sender() == JAKE_SENDER
     assert not thread_errors
 
 
-def test_cancel_while_waiting_to_commit(
+def test_cancel_while_the_save_waits_for_the_msal_lock(
     tmp_path: Path,
     scenario: Scenario,
     me: respx.Route,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Microsoft accepted, but a token renewal holds the MSAL lock, so saving hasn't started:
-    a cancel still wins and the previous sign-in stays, in memory and on disk."""
+    """Microsoft accepted and the profile was read, but a token renewal holds the MSAL lock, so
+    the sign-in thread is waiting for it and saving hasn't started: a cancel still wins and the
+    previous sign-in stays, in memory and on disk."""
     thread_errors = catch_thread_errors(monkeypatch)
     auth = make_auth(tmp_path)
     sign_in(auth)
@@ -1313,19 +1337,24 @@ def test_cancel_while_waiting_to_commit(
     scenario.silent = silent
     renewal, errors = in_thread(auth.get_access_token)
     assert entered.wait(30)  # holding the MSAL lock
+    # Only the sign-in thread takes the lock from here on, so `waiting` means it has got past
+    # Microsoft and the profile and is about to save.
+    lock = SignalledLock(auth._msal_lock)
+    auth._msal_lock = lock  # type: ignore[assignment]
     thread = start_held(auth, scenario)
     scenario.release.set()
+    assert lock.waiting.wait(30)
     assert quick(auth.cancel_sign_in) is True
     gate.set()
     finish(renewal)
     finish(thread)
     assert not errors and not thread_errors
     status = auth.status()
-    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert status.state == "signed_in" and status.sender == JAKE_SENDER
     assert status.notice == "Sign-in cancelled."
     assert (tmp_path / CACHE_FILE).read_bytes() == before
-    assert get_sender(auth.db) == OLD_SENDER
-    assert restart(auth).sender() == OLD_SENDER
+    assert get_sender(auth.db) == JAKE_SENDER
+    assert restart(auth).sender() == JAKE_SENDER
 
 
 def test_sign_out_during_commit_signs_out_after_it(
@@ -1368,8 +1397,8 @@ def test_shutdown_during_commit_waits_for_it(
     me: respx.Route,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A sign-in being saved can't be stopped, so shutdown waits for the save (fix B4): the
-    app must not exit with the new account in the file and the old address in the database."""
+    """A sign-in being saved can't be stopped, so shutdown waits (up to 12 s) for the sign-in
+    thread to finish the save (fix B4)."""
     thread_errors = catch_thread_errors(monkeypatch)
     auth = make_auth(tmp_path)
     sign_in(auth)
@@ -1378,10 +1407,10 @@ def test_shutdown_during_commit_waits_for_it(
     thread = start_held(auth, scenario)
     scenario.release.set()
     assert entered.wait(30)  # the new cache is on disk, the sender not yet
-    lock = SignalledLock(auth._msal_lock)
-    auth._msal_lock = lock  # type: ignore[assignment]
+    joining, timeouts = watch_join(thread)
     stopping, errors = in_thread(auth.shutdown)
-    assert lock.waiting.wait(30)  # shutdown is waiting for the save...
+    assert joining.wait(30)  # shutdown is waiting for the sign-in thread...
+    assert timeouts[0] == msauth.SHUTDOWN_SAVE_WAIT_SECONDS == 12
     assert stopping.is_alive()  # ...which can't finish until released, so it hasn't returned
     release.set()
     finish(stopping)
@@ -1394,6 +1423,179 @@ def test_shutdown_during_commit_waits_for_it(
     again = restart(auth)
     assert again.status().state == "signed_in" and again.sender() == NEW_SENDER
     assert NEW_REFRESH in again._cache.serialize()
+
+
+def test_shutdown_gives_up_on_a_hung_save(
+    tmp_path: Path,
+    scenario: Scenario,
+    me: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The save hangs (here: the database write): shutdown returns after its wait with a
+    warning. If the app then exits, the next start finds the new account in the file and the
+    old address in the database and is signed out, never sending as the wrong account."""
+    thread_errors = catch_thread_errors(monkeypatch)
+    monkeypatch.setattr(msauth, "SHUTDOWN_SAVE_WAIT_SECONDS", 0.05)
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    next_account_is_new(scenario, me)
+    entered, release = gate_store(monkeypatch)
+    thread = start_held(auth, scenario)
+    scenario.release.set()
+    assert entered.wait(30)  # the new cache is on disk, the sender not yet
+    with caplog.at_level(logging.WARNING, logger="outlook_mailer.msauth"):
+        quick(auth.shutdown)
+    assert thread.is_alive()  # still saving
+    assert "still running at shutdown" in caplog.text
+    # The app exits here: the file holds the new account, the database the old address.
+    assert NEW_REFRESH in (tmp_path / CACHE_FILE).read_text()
+    assert get_sender(auth.db) == JAKE_SENDER
+    calls = len(scenario.forced)
+    again = restart(auth)
+    status = again.status()
+    assert status.state == "signed_out" and status.sender is None
+    assert "isn't for the sending address" in (status.error or "")
+    assert again.sender() is None
+    with pytest.raises(NotSignedIn):
+        again.get_access_token(expected_address=JAKE_SENDER.address)
+    assert len(scenario.forced) == calls  # no token was even asked for
+    release.set()
+    finish(thread)
+    assert not thread_errors
+
+
+# --- the cache file and the stored sender must agree --------------------------------------------
+
+
+def file_and_db_disagree(tmp_path: Path, scenario: Scenario, me: respx.Route) -> MicrosoftAuth:
+    """Signed in as Jake, then as the new account; then the database is put back to Jake, as
+    when the app stops between a sign-in's file write and its database write."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    jake = get_sender(auth.db)
+    assert jake is not None and jake.account_id
+    next_account_is_new(scenario, me)
+    sign_in(auth)
+    msauth._store_sender(auth.db, jake)
+    return auth
+
+
+def assert_not_used(auth: MicrosoftAuth, scenario: Scenario, message: str) -> None:
+    calls = len(scenario.forced)
+    status = auth.status()
+    assert status.state == "signed_out" and status.sender is None
+    assert message in (status.error or "")
+    assert auth.sender() is None and auth.indicator() == "not connected"
+    with pytest.raises(NotSignedIn):
+        auth.get_access_token()
+    with pytest.raises(NotSignedIn):
+        auth.get_access_token(expected_address=JAKE_SENDER.address)
+    assert len(scenario.forced) == calls  # Microsoft was never asked for a token
+
+
+def test_restart_with_another_accounts_cache_is_signed_out(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, caplog: pytest.LogCaptureFixture
+) -> None:
+    auth = file_and_db_disagree(tmp_path, scenario, me)
+    with caplog.at_level(logging.WARNING, logger="outlook_mailer.msauth"):
+        again = restart(auth)
+        assert_not_used(again, scenario, "isn't for the sending address the app has stored")
+    assert "doesn't match the stored sender" in caplog.text
+    assert NEW_REFRESH in (tmp_path / CACHE_FILE).read_text()  # left alone, not used
+    # Connecting again fixes it, and stays fixed after a restart.
+    sign_in(again)
+    assert again.sender() == NEW_SENDER and again.status().error is None
+    assert again.get_access_token().startswith("silent-")
+    later = restart(again)
+    assert later.sender() == NEW_SENDER and later.status().error is None
+    assert later.get_access_token().startswith("silent-")
+
+
+def test_mismatch_shown_on_the_pages(tmp_path: Path, scenario: Scenario, me: respx.Route) -> None:
+    file_and_db_disagree(tmp_path, scenario, me)
+    with TestClient(create_app(graph_settings(tmp_path)), base_url=BASE) as c:
+        page = c.get("/account").text
+        assert 'data-state="signed_out"' in page and 'id="account-error"' in page
+        assert "for the sending address the app has stored (Jake@outlook.com)" in page
+        assert "Connect Outlook account" in page
+        home = c.get("/").text
+        assert 'id="home-ms-problem"' in home and "Connect the account again." in home
+        assert "Connected as" not in home
+
+
+def test_cache_without_a_stored_sender_is_not_used(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    """The first sign-in's file was written but the app stopped before the database write."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    msauth._store_sender(auth.db, None)
+    assert_not_used(restart(auth), scenario, "without its sending address")
+    assert (tmp_path / CACHE_FILE).exists()
+
+
+def test_stored_sender_without_a_cache_is_signed_out(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    (tmp_path / CACHE_FILE).unlink()
+    assert_not_used(restart(auth), scenario, "for Jake@outlook.com is missing")
+
+
+def test_cache_with_two_accounts_is_not_used(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    with auth._msal_lock:
+        auth._cache.add(
+            {
+                "client_id": CLIENT_ID,
+                "scope": list(SCOPES),
+                "token_endpoint": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+                "response": token_response(username="new@outlook.com"),
+                "params": {},
+                "data": {},
+            }
+        )
+        auth._save(strict=True)
+    assert len(msauth._accounts(restart(auth)._cache)) == 0  # not loaded
+    assert_not_used(restart(auth), scenario, "more than one account")
+
+
+def test_sender_saved_before_account_ids_matches_by_username(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    """A sender stored without the account ID (before this check existed): the account's
+    sign-in name is compared with the address instead, ignoring case."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)  # the account's username is jake@outlook.com
+    msauth._store_sender(auth.db, msauth.Sender("Jake@Outlook.com", "Jake Elliott"))
+    again = restart(auth)
+    assert again.status().state == "signed_in" and again.status().error is None
+    assert again.get_access_token().startswith("silent-")
+    msauth._store_sender(auth.db, msauth.Sender("someone@outlook.com", "Someone"))
+    assert_not_used(restart(auth), scenario, "(someone@outlook.com)")
+
+
+def test_get_access_token_refuses_another_accounts_token(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    """Defence in depth: should the sender in memory ever not belong to the cached account,
+    no token is handed out, even when the caller's expected address matches the sender."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    other = msauth.Sender("other@outlook.com", "Other", account_id="someone-else")
+    with auth._state_lock:
+        auth._sender = other
+    calls = len(scenario.forced)
+    with pytest.raises(NotSignedIn):
+        auth.get_access_token(expected_address=other.address)
+    assert len(scenario.forced) == calls
+    status = auth.status()
+    assert status.state == "signed_out" and "isn't for the sending address" in (status.error or "")
 
 
 def test_refused_start_shows_a_notice(
