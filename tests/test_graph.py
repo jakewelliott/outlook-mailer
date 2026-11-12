@@ -17,7 +17,7 @@ import httpx
 import pytest
 import respx
 
-from app import campaigns, drafts, gate, sender
+from app import campaigns, drafts, gate, msauth, sender
 from app.compose import RenderedEmail
 from app.config import Settings, load_settings
 from app.db import Database
@@ -88,7 +88,7 @@ class FakeAuth(MicrosoftAuth):
         if self.on_token is not None:
             self.on_token()
         if self.account is None:
-            raise NotSignedIn("No Microsoft account is connected.")
+            raise NotSignedIn(msauth.NO_ACCOUNT)
         if expected_address is not None and normalise_key(self.account.address) != normalise_key(
             expected_address
         ):
@@ -278,7 +278,7 @@ def test_given_client_is_not_closed(auth: FakeAuth, graph: respx.Route) -> None:
 @pytest.mark.parametrize(
     ("exc", "kind"),
     [
-        (NotSignedIn("No Microsoft account is connected."), "auth"),
+        (NotSignedIn(msauth.NO_ACCOUNT), "auth"),
         (ReauthRequired("The Microsoft sign-in has expired."), "auth"),
         (TokenUnavailable("Couldn't reach Microsoft to renew the sign-in."), "retry"),
         (RuntimeError("msal bug"), "retry"),
@@ -290,6 +290,7 @@ def test_token_errors(auth: FakeAuth, graph: respx.Route, exc: Exception, kind: 
     assert not graph.called  # no request without a token
     if kind == "auth":
         assert result.auth_error and str(exc) in (result.error or "")
+        assert result.signed_out == isinstance(exc, NotSignedIn)  # fix C3
     else:
         assert result.retryable and not result.throttled
 
@@ -689,15 +690,93 @@ def test_worker_sends_from_the_signed_in_address(tmp_path: Path, graph: respx.Ro
 
 
 def test_worker_signed_out_stops_without_sending(tmp_path: Path, graph: respx.Route) -> None:
+    """Nothing connected: the stop says so, without blaming Microsoft (fix C3), and the
+    recipient is sent once after connecting and resuming."""
+    graph.mock(return_value=httpx.Response(202))
     env = GraphEnv(tmp_path, account=None)
     cid = env.campaign(EMAILS)
     env.drive()
     c = env.campaign_row(cid)
     assert c.status == campaigns.STOPPED_ERROR
-    assert c.last_error and "Connect your Outlook account" in c.last_error
+    assert c.last_error == (
+        "No Outlook account is connected. Connect it on the Account page. Then resume this send."
+    )
+    assert "Microsoft won't take mail" not in c.last_error
     assert not graph.called and env.auth.calls == 0
     row = env.recipient(cid, "ada@example.com")
     assert row["status"] == campaigns.R_PENDING and row["attempts"] == 0
+
+    env.auth.account = ME
+    campaigns.resume(env.db, cid, env.clock(), transport="graph")
+    env.drive()
+    assert env.campaign_row(cid).status == campaigns.FINISHED
+    assert env.recipient(cid, "ada@example.com")["status"] == campaigns.R_SENT
+    assert graph.call_count == len(EMAILS)  # each sent once
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        msauth.NO_ACCOUNT,
+        "The saved Microsoft sign-in isn't for the sending address the app has stored "
+        "(jake@outlook.com); the app probably stopped while a new sign-in was being saved. "
+        "To be safe it isn't used. Connect the account again.",
+    ],
+)
+def test_worker_signed_out_at_the_token(tmp_path: Path, graph: respx.Route, problem: str) -> None:
+    """``NotSignedIn`` from the token step (signed out meanwhile, or a saved sign-in that doesn't
+    match: fix B4): nothing sent, the stop gives that reason without the Microsoft prefix."""
+    graph.mock(return_value=httpx.Response(202))
+    env = GraphEnv(tmp_path)
+    env.auth.token = NotSignedIn(problem)
+    cid = env.campaign(EMAILS, sender_address=ME.address)
+    env.drive()
+    c = env.campaign_row(cid)
+    assert c.status == campaigns.STOPPED_ERROR
+    assert c.last_error == f"{problem} {sender.SIGNED_OUT_AFTER}"
+    assert not c.last_error.startswith(sender.AUTH_STOP_MESSAGE)
+    assert not graph.called
+    row = env.recipient(cid, "ada@example.com")
+    assert row["status"] == campaigns.R_PENDING and row["attempts"] == 0
+    assert row["last_error"] == problem
+
+    env.auth.token = TOKEN  # connected again
+    campaigns.resume(env.db, cid, env.clock(), transport="graph")
+    env.drive()
+    assert env.campaign_row(cid).status == campaigns.FINISHED
+    assert env.recipient(cid, "ada@example.com")["status"] == campaigns.R_SENT
+    assert graph.call_count == len(EMAILS)
+
+
+def test_test_send_signed_out_just_before_the_token(tmp_path: Path, graph: respx.Route) -> None:
+    """A test send whose account was disconnected before the token: nothing sent, and the error
+    says to connect it (no Microsoft prefix)."""
+    graph.mock(return_value=httpx.Response(202))
+    env = GraphEnv(tmp_path)
+
+    def sign_out() -> None:
+        env.auth.account = None
+
+    env.auth.on_token = sign_out
+
+    async def go() -> gate.SentTest:
+        try:
+            return await gate.send_test(
+                env.db,
+                env.settings,
+                env.transport,
+                draft_id="d" * 32,
+                content=CONTENT,
+                values={"first_name": "Ada", "email": "ada@example.com"},
+                sender=ME,
+                clock=env.clock,
+            )
+        finally:
+            await env.transport.aclose()
+
+    test = asyncio.run(go())
+    assert test.ok is False and not test.outcome_unknown and not graph.called
+    assert test.error == "No Outlook account is connected. Connect it on the Account page."
 
 
 def test_worker_stops_when_the_account_changed(tmp_path: Path, graph: respx.Route) -> None:

@@ -100,7 +100,7 @@ from app.config import Settings
 from app.db import Database
 from app.emails import normalise_key
 from app.message import MessageError, build_mime, check_single_recipient
-from app.msauth import Sender
+from app.msauth import NO_ACCOUNT, Sender
 from app.recipients import Recipient
 from app.transport.base import SendResult, Transport
 from app.unsubscribes import UnsubscribeWatcher
@@ -126,7 +126,9 @@ SHUTDOWN_GRACE_SECONDS = 15.0
 # Put before the transport's reason when an auth result stops a campaign.
 AUTH_STOP_MESSAGE = "Microsoft won't take mail from the Outlook account right now:"
 AUTH_STOP_AFTER = "Once that is fixed, resume this send."
-NOT_SIGNED_IN = "No Outlook account is connected. Connect your Outlook account on the Account page."
+# A signed-out stop (``SendResult.signed_out``): the reason, then this (no AUTH_STOP_MESSAGE).
+SIGNED_OUT_AFTER = "Then resume this send."
+NOT_SIGNED_IN = NO_ACCOUNT
 
 Clock = Callable[[], datetime]
 SenderSource = Callable[[], Sender | None]
@@ -569,9 +571,8 @@ class SendWorker:
         if self.sender is not None:
             account = await asyncio.to_thread(self.sender)
             if account is None:  # signed out: stop the campaign, nothing is sent
-                await self._save(
-                    _Outcome(c, row, SendResult.auth(NOT_SIGNED_IN), self.clock(), None)
-                )
+                result = SendResult.auth(NOT_SIGNED_IN, signed_out=True)
+                await self._save(_Outcome(c, row, result, self.clock(), None))
                 return
             if c.sender_address is not None and normalise_key(account.address) != normalise_key(
                 c.sender_address
@@ -786,6 +787,11 @@ class SendWorker:
                     # refusal, so the same reason as that check gives.
                     add_event(conn, c.id, now, f"{who}: not sent: {error}")
                     reason = campaigns.sender_changed_message(*result.sender_changed)
+                elif result.signed_out:
+                    # Nothing is connected (or the saved sign-in can't be used): not
+                    # Microsoft's refusal either (fix C3).
+                    add_event(conn, c.id, now, f"{who}: not sent: {error}")
+                    reason = f"{error} {SIGNED_OUT_AFTER}"
                 else:
                     add_event(conn, c.id, now, f"{who}: not sent, sign-in problem: {error}")
                     reason = f"{AUTH_STOP_MESSAGE} {error} {AUTH_STOP_AFTER}"
