@@ -23,6 +23,7 @@ from app.campaigns import CampaignError
 from app.compose import DraftContent
 from app.config import Settings, load_settings
 from app.db import Database
+from app.message import MessageError
 from app.recipients import Recipient
 from app.sender import SendWorker
 from app.transport import MockTransport, SendResult
@@ -1009,6 +1010,126 @@ def test_cancel_during_a_failing_send(tmp_path: Path) -> None:
     assert rows["ada@example.com"]["status"] == campaigns.R_NOT_SENT
     assert rows["ada@example.com"]["next_attempt_at"] is None
     assert env.step() is None
+
+
+BUILD_ERRORS = {
+    "message_error": MessageError("bad address"),  # permanent
+    "exception": RuntimeError("template broke"),  # retryable
+}
+
+
+def build_then(env: Env, action: Callable[[], object], exc: Exception) -> None:
+    """Make ``_build`` run ``action`` (Jake clicks Pause or Cancel while the message is being
+    rendered, i.e. after the plan) and then fail with ``exc``."""
+
+    def build(*args: object) -> bytes:
+        action()
+        raise exc
+
+    env.worker._build = build  # type: ignore[method-assign]
+
+
+def failures(env: Env, cid: int) -> int:
+    with env.db.connect() as conn:
+        return conn.execute(
+            "SELECT consecutive_failures FROM campaigns WHERE id = ?", (cid,)
+        ).fetchone()[0]
+
+
+def results(env: Env, cid: int) -> dict[str, list[str]]:
+    rows = list(csv.reader(io.StringIO(campaigns.results_csv(env.db, cid))))
+    return {r[1]: r for r in rows[1:]}
+
+
+@pytest.mark.parametrize("kind", list(BUILD_ERRORS))
+def test_cancel_during_a_failing_build_leaves_not_sent(tmp_path: Path, kind: str) -> None:
+    """Fix A2: a recipient cancelled before the transport was called is ``not_sent``, even if
+    building their message then fails; the failure isn't counted anywhere."""
+    env = Env(tmp_path, rate=60)
+    cid = env.campaign(EMAILS)
+    build_then(
+        env, lambda: campaigns.cancel(env.db, tmp_path, cid, env.clock()), BUILD_ERRORS[kind]
+    )
+    env.step()
+    assert env.status(cid) == campaigns.CANCELLED
+    rows = env.recipients(cid)
+    assert {r["status"] for r in rows.values()} == {campaigns.R_NOT_SENT}
+    ada = rows["ada@example.com"]
+    assert ada["attempts"] == 0
+    assert ada["last_error"] is None
+    assert ada["next_attempt_at"] is None
+    assert failures(env, cid) == 0
+    assert not any("ada@example.com" in e for e in env.events(cid))
+    assert env.send_times() == []
+    assert results(env, cid)["ada@example.com"][3:5] == ["not_sent", "0"]
+    c = campaigns.get_campaign(env.db, cid)
+    assert c is not None and c.last_error is None
+    env.clock.advance(3600)
+    assert env.step() is None
+
+
+@pytest.mark.parametrize("kind", list(BUILD_ERRORS))
+def test_pause_during_a_failing_build_leaves_pending(tmp_path: Path, kind: str) -> None:
+    """A pause landing after the plan: the build failure isn't recorded (the recipient stays
+    ``pending``, attempt uncounted); after resuming it is built again and goes out."""
+    env = Env(tmp_path, rate=60)
+    cid = env.campaign(EMAILS)
+    real_build = env.worker._build
+    build_then(env, lambda: campaigns.pause(env.db, cid, env.clock()), BUILD_ERRORS[kind])
+    env.step()
+    assert env.status(cid) == campaigns.PAUSED
+    ada = env.recipients(cid)["ada@example.com"]
+    assert ada["status"] == campaigns.R_PENDING
+    assert ada["attempts"] == 0
+    assert ada["last_error"] is None
+    assert ada["next_attempt_at"] is None
+    assert failures(env, cid) == 0
+    env.worker._build = real_build  # type: ignore[method-assign]
+    campaigns.resume(env.db, cid, env.clock(), transport="mock")
+    env.drive()
+    rows = env.recipients(cid)
+    assert {r["status"] for r in rows.values()} == {campaigns.R_SENT}
+    assert rows["ada@example.com"]["attempts"] == 1
+
+
+def test_message_error_in_an_active_campaign_is_failed(tmp_path: Path) -> None:
+    env = Env(tmp_path, rate=60)
+    cid = env.campaign(EMAILS)
+    real_build = env.worker._build
+
+    def build(c: object, row: sender._Row, account: object) -> bytes:
+        if row.email == "bob@example.com":
+            raise MessageError("bad address")
+        return real_build(c, row, account)  # type: ignore[arg-type]
+
+    env.worker._build = build  # type: ignore[method-assign]
+    env.drive()
+    assert env.status(cid) == campaigns.FINISHED
+    bob = env.recipients(cid)["bob@example.com"]
+    assert bob["status"] == campaigns.R_FAILED
+    assert bob["attempts"] == 1
+    assert bob["last_error"] == "bad address"
+    assert results(env, cid)["bob@example.com"][3:5] == ["failed", "1"]
+    assert results(env, cid)["cy@example.com"][3] == "sent"
+    assert any("bob@example.com" in e and "failed permanently" in e for e in env.events(cid))
+    assert env.outbox_to() == ["Name0 <ada@example.com>", "Name2 <cy@example.com>"]
+
+
+def test_cancel_while_signed_out_leaves_not_sent(tmp_path: Path) -> None:
+    """The other pre-send outcome (graph mode, no account): a cancel after the plan wins too."""
+    env = Env(tmp_path, rate=60)
+    cid = env.campaign(EMAILS)
+
+    def signed_out() -> None:
+        campaigns.cancel(env.db, tmp_path, cid, env.clock())
+
+    env.worker.sender = signed_out
+    env.step()
+    assert env.status(cid) == campaigns.CANCELLED
+    rows = env.recipients(cid)
+    assert {r["status"] for r in rows.values()} == {campaigns.R_NOT_SENT}
+    assert rows["ada@example.com"]["last_error"] is None
+    assert env.send_times() == []
 
 
 RACE_RESULTS = {
