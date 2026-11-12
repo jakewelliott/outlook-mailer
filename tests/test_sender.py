@@ -23,6 +23,7 @@ from app.compose import DraftContent
 from app.config import Settings, load_settings
 from app.db import Database
 from app.message import MessageError
+from app.msauth import Sender
 from app.recipients import Recipient
 from app.sender import SendWorker
 from app.transport import MockTransport, SendResult
@@ -1302,6 +1303,61 @@ def test_cancel_while_signed_out_leaves_not_sent(tmp_path: Path) -> None:
     assert {r["status"] for r in rows.values()} == {campaigns.R_NOT_SENT}
     assert rows["ada@example.com"]["last_error"] is None
     assert env.send_times() == []
+
+
+def test_pause_while_signed_out_leaves_pending(tmp_path: Path) -> None:
+    """A pause after the plan beats the signed-out result (``SendResult.auth(...,
+    signed_out=True)``): nothing is recorded and the send stays paused, not stopped. After
+    connecting and resuming, the recipient is sent once."""
+    env = Env(tmp_path, rate=60)
+    cid = env.campaign(EMAILS)
+
+    def signed_out() -> None:
+        campaigns.pause(env.db, cid, env.clock())
+
+    env.worker.sender = signed_out
+    events_before_step = len(env.events(cid))
+    env.step()
+    assert env.status(cid) == campaigns.PAUSED
+    ada = env.recipients(cid)["ada@example.com"]
+    assert ada["status"] == campaigns.R_PENDING
+    assert ada["attempts"] == 0
+    assert ada["last_error"] is None
+    assert ada["next_attempt_at"] is None
+    assert failures(env, cid) == 0
+    new_events = env.events(cid)[events_before_step:]
+    assert not any("ada@example.com" in e or "not sent" in e for e in new_events)
+    c = campaigns.get_campaign(env.db, cid)
+    assert c is not None and c.last_error is None
+    assert env.send_times() == []
+
+    env.worker.sender = lambda: Sender("jake@outlook.com", "Jake")
+    campaigns.resume(env.db, cid, env.clock(), transport="mock")
+    env.drive()
+    assert env.status(cid) == campaigns.FINISHED
+    rows = env.recipients(cid)
+    assert {r["status"] for r in rows.values()} == {campaigns.R_SENT}
+    assert rows["ada@example.com"]["attempts"] == 1
+    assert env.outbox_to().count("Name0 <ada@example.com>") == 1
+
+
+def test_dropped_pre_send_outcome_log_has_no_address(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The info line for a dropped build failure names the row and the kind of outcome, not
+    the error text, which can contain the recipient's address."""
+    env = Env(tmp_path, rate=60)
+    cid = env.campaign(EMAILS)
+    build_then(
+        env,
+        lambda: campaigns.pause(env.db, cid, env.clock()),
+        MessageError("ada@example.com is not a valid address"),
+    )
+    with caplog.at_level("INFO", logger=sender.log.name):
+        env.step()
+    assert env.status(cid) == campaigns.PAUSED
+    assert "Row 2 of send" in caplog.text and "permanent failure" in caplog.text
+    assert "ada@example.com" not in caplog.text
 
 
 RACE_RESULTS = {
