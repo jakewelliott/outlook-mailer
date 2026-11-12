@@ -29,8 +29,9 @@ and write the results in the table at the end.
    - `From:` is your @outlook.com address. Which display name is shown: the business name from the footer, or your
      Microsoft profile name?
    - `To:` is only your address; there is no `Cc`/`Bcc`.
-   - `List-Unsubscribe: <https://<your domain>/u/...>` is present, on one line, and the link is the same as the
-     Unsubscribe link at the bottom of the email.
+   - `List-Unsubscribe: <https://<your domain>/u/.../one-click>` is present, on one line, and the link is the
+     Unsubscribe link at the bottom of the email with `/one-click` added (the header is for mail apps' one-click
+     button; the footer link opens the confirmation page).
    - `List-Unsubscribe-Post: List-Unsubscribe=One-Click` is present.
    - `Message-ID:` ends in `@<your domain>` (kept) or was replaced by Microsoft (write down what it is).
    - `Content-Type: multipart/alternative` with a `text/plain` and a `text/html` part.
@@ -124,7 +125,7 @@ Footer (CAN-SPAM)
       the "why you're receiving this" line, and the Unsubscribe link are all visible and readable.
 - [ ] Phone/address text is not turned into blue auto-links (iOS).
 - [ ] Clicking **Unsubscribe** opens the confirmation page (stage 13) on `PUBLIC_BASE_URL/u/...`; it does not
-      unsubscribe you until you press the button.
+      unsubscribe you until you type the address the email was sent to and press the button.
 - [ ] The mail app's own "Unsubscribe" button (Gmail, Outlook.com, Apple Mail) appears once the
       List-Unsubscribe headers are in place (stage 9/12). It may take a few sends from the account before Gmail
       shows it.

@@ -1,0 +1,23 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "Unsubscribes" %}
+{% block content %}
+<h1>Unsubscribes</h1>
+<p>People who used the unsubscribe link, from <code>{{ filename }}</code> in the data folder. They are skipped
+automatically when sending; remove them from your customer list too.</p>
+{% if rows %}
+<p id="unsub-count"><strong>{{ people }}</strong> {{ "address" if people == 1 else "addresses" }}, newest first.{% if rows | length != people %} The file has {{ rows | length }} entries: some addresses are listed more than once
+(in another capitalisation, or with the domain written another way).{% endif %}</p>
+<p><a class="button" href="/unsubscribes/{{ filename }}" download>Download {{ filename }}</a></p>
+<table class="ref">
+  <thead><tr><th>Email</th><th>Unsubscribed</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr><td>{{ r.email }}</td><td>{{ r.when }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p id="unsub-count" class="muted">Nobody has unsubscribed yet.</p>
+<p><a class="button" href="/unsubscribes/{{ filename }}" download>Download {{ filename }}</a></p>
+{% endif %}
+{% endblock %}

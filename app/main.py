@@ -18,7 +18,17 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from starlette.types import Scope
 
-from app import campaigns, render, ui, ui_account, ui_campaigns, ui_compose, ui_send
+from app import (
+    campaigns,
+    render,
+    ui,
+    ui_account,
+    ui_campaigns,
+    ui_compose,
+    ui_send,
+    ui_unsubscribes,
+    unsubscribe_pages,
+)
 from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
 from app.db import Database
@@ -132,6 +142,9 @@ def create_app(
     app.state.transport = transport
     app.state.msauth = msauth
     app.state.csrf_signer = CsrfSigner(settings.unsubscribe_secret)
+    app.state.unsubscribe_limiter = unsubscribe_pages.make_limiter()
+    app.state.unsubscribe_address_limiter = unsubscribe_pages.make_address_limiter()
+    app.state.unsubscribe_ip_warning = unsubscribe_pages.MissingIpWarning()
     app.add_middleware(RequestGuard, settings=settings, verifier=verifier)
     app.add_exception_handler(Forbidden, forbidden_response)
     app.add_exception_handler(ui_send.UploadTooLarge, ui_send.upload_too_large)
@@ -147,6 +160,9 @@ def create_app(
     app.include_router(ui_compose.router)
     app.include_router(ui_campaigns.router)
     app.include_router(ui_account.router)
+    app.include_router(ui_unsubscribes.router)
+    # Public: unsubscribe pages (the guard treats /u/* as public; no Access, no admin CSRF).
+    app.include_router(unsubscribe_pages.router)
     # Admin-only: the guard protects everything outside the public paths.
     app.mount("/static", StaticFiles(directory=ui.STATIC_DIR), name="static")
     # Public: images linked from sent emails (the guard treats /img/* as public).

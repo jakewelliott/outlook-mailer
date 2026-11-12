@@ -180,7 +180,7 @@ class RenderedEmail:
     subject: str
     html: str
     text: str
-    unsubscribe_url: str  # the link in the body; reuse it for the List-Unsubscribe header
+    unsubscribe_url: str  # the link in the body; the List-Unsubscribe header adds /one-click
 
 
 def render_message(

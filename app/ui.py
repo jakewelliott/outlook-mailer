@@ -23,8 +23,8 @@ NAV = [
     ("/account", "Account"),
 ]
 # Pages with real routes elsewhere: "/" here, "/send/new" in ui_send, "/campaigns" in
-# ui_campaigns, "/account" in ui_account.
-REAL_PAGES = ("/", "/send/new", "/campaigns", "/account")
+# ui_campaigns, "/unsubscribes" in ui_unsubscribes, "/account" in ui_account.
+REAL_PAGES = ("/", "/send/new", "/campaigns", "/unsubscribes", "/account")
 PLACEHOLDERS = {path: label for path, label in NAV if path not in REAL_PAGES}
 
 

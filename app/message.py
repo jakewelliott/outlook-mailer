@@ -4,8 +4,11 @@
 then HTML, both UTF-8) with exactly one address, in ``To``. There is never a ``Cc``, ``Bcc`` or
 ``Reply-To``. Headers: ``From``, ``To``, ``Subject``, ``Date``, ``Message-ID`` (at the
 ``PUBLIC_BASE_URL`` host, taken from the unsubscribe link), ``MIME-Version``,
-``List-Unsubscribe: <PUBLIC_BASE_URL/u/<token>>`` and, for an https link,
-``List-Unsubscribe-Post: List-Unsubscribe=One-Click`` (RFC 8058 requires https).
+``List-Unsubscribe: <PUBLIC_BASE_URL/u/<token>/one-click>`` and, for an https link,
+``List-Unsubscribe-Post: List-Unsubscribe=One-Click`` (RFC 8058 requires https). The header points
+at the one-click route (records on a POST with no body requirements; a GET shows the confirmation
+page), while the body's link (``RenderedEmail.unsubscribe_url``) is the confirmation page itself,
+which asks the visitor to type their address (``app.unsubscribe_pages``).
 
 ``From``: Graph sends from the signed-in mailbox whatever the MIME says, and Exchange may refuse a
 message whose ``From`` is another address (send-as). RFC 5322 requires a ``From``, so it is always
@@ -43,6 +46,7 @@ from email_validator import EmailNotValidError, validate_email
 from app.compose import RenderedEmail
 from app.content import neutralise_encoded_words
 from app.merge import strip_invisible
+from app.unsubscribe_tokens import one_click_url
 
 PLACEHOLDER_FROM = "sender@example.invalid"
 # Graph has no documented sendMail size limit for MIME; 4 MB is its usual request ceiling
@@ -138,7 +142,9 @@ def _check_unsubscribe_url(url: str) -> str:
         raise MessageError("The unsubscribe link must be an http(s) URL.")
     if not url.isascii() or any(ch in url for ch in " <>\"'\\"):
         raise MessageError("The unsubscribe link has characters a header can't carry.")
-    if len("List-Unsubscribe: <>") + len(url) > MAX_LINE:
+    if "?" in url or "#" in url:  # one_click_url would refuse it (the suffix would land inside)
+        raise MessageError("The unsubscribe link must not have a query or fragment.")
+    if len("List-Unsubscribe: <>") + len(one_click_url(url)) > MAX_LINE:
         raise MessageError("The unsubscribe link is too long for a header.")
     return url
 
@@ -178,7 +184,7 @@ def build_mime(
     msg["Date"] = format_datetime(date or datetime.now(UTC))
     msg["Message-ID"] = make_msgid(domain=_host(unsubscribe))
     msg["MIME-Version"] = "1.0"
-    msg.set_raw("List-Unsubscribe", f"<{unsubscribe}>")
+    msg.set_raw("List-Unsubscribe", f"<{one_click_url(unsubscribe)}>")
     if unsubscribe.startswith("https://"):
         msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 

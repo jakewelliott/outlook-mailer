@@ -19,6 +19,7 @@ import re
 from app.emails import normalise_key
 
 UNSUBSCRIBE_PATH = "/u/"
+ONE_CLICK_SUFFIX = "/one-click"  # /u/<token>/one-click: the List-Unsubscribe header's URL
 MAC_BYTES = 16
 MAX_EMAIL_BYTES = 320
 _PURPOSE = b"outlook-mailer unsubscribe v1"
@@ -68,3 +69,14 @@ def verify_token(secret: str, token: str) -> str | None:
 def unsubscribe_url(public_base_url: str, secret: str, email: str) -> str:
     """``PUBLIC_BASE_URL/u/<token>`` for ``email``."""
     return f"{public_base_url.rstrip('/')}{UNSUBSCRIBE_PATH}{make_token(secret, email)}"
+
+
+def one_click_url(page_url: str) -> str:
+    """The RFC 8058 one-click URL for the page at ``page_url`` (``.../u/<token>/one-click``).
+
+    Only the ``List-Unsubscribe`` header carries it; the email body links to the page itself.
+    A URL with a query or fragment is refused (``ValueError``): the suffix would land inside it.
+    """
+    if "?" in page_url or "#" in page_url:
+        raise ValueError("the unsubscribe page URL must not contain '?' or '#'")
+    return page_url + ONE_CLICK_SUFFIX

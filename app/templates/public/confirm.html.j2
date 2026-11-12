@@ -1,0 +1,16 @@
+{% extends "public/base.html.j2" %}
+{% set title = "Unsubscribe" %}
+{% block content %}
+<h1>Unsubscribe?</h1>
+{% if mismatch %}
+<p class="error" role="alert"><strong>That email address doesn't match.</strong> Look at the original email to find the
+address it was sent to, and type that one.</p>
+{% endif %}
+<p>To stop getting these emails, type the email address they were sent to and press the button.</p>
+<form method="post" action="{{ action }}">
+<p><label for="email">Your email address</label>
+<input id="email" name="email" type="text" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" maxlength="320" required></p>
+<p><button type="submit">Unsubscribe</button></p>
+</form>
+<p class="small">Nothing changes until you press the button.</p>
+{% endblock %}

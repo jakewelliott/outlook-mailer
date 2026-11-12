@@ -103,7 +103,9 @@ def test_test_send_flow(client: TestClient, tmp_path: Path, app_settings: Settin
     assert msg["Subject"] == "[TEST] Merry Christmas, Ada"
     assert "Dear Ada" in msg.get_body(("plain",)).get_content()
     # The unsubscribe link is for Jake's address, never the customer's.
-    link = str(msg["List-Unsubscribe"]).strip("<>")
+    header = str(msg["List-Unsubscribe"]).strip("<>")
+    assert header.endswith("/one-click")
+    link = header.removesuffix("/one-click")  # the page; the header has the one-click route
     assert verify_token(app_settings.unsubscribe_secret, link.rsplit("/", 1)[1]) == (
         gate.MOCK_TEST_ADDRESS
     )
@@ -544,3 +546,24 @@ def test_graph_start_records_the_tested_address(
         assert "send a test of this message to other@outlook.com" in html.unescape(r.text)
         camp = campaigns.get_campaign(db_of(c), cid)
         assert camp is not None and camp.status == campaigns.PAUSED
+
+
+def test_test_send_unsubscribe_link_only_unsubscribes_jake(
+    client: TestClient, tmp_path: Path, app_settings: Settings
+) -> None:
+    """Every unsubscribe link in a test (header, HTML, text) is for Jake's own address, so
+    clicking it while checking the page can't unsubscribe the customer whose fields were used."""
+    draft = make_draft(client)
+    save(client, draft)
+    assert click_test(client, draft, r="0").status_code == 303
+    [msg] = outbox(tmp_path)
+    header = str(msg["List-Unsubscribe"]).strip("<>").removesuffix("/one-click")
+    html_part = msg.get_body(("html",)).get_content()
+    text_part = msg.get_body(("plain",)).get_content()
+    links = set(re.findall(r"https://mail\.example\.com/u/[A-Za-z0-9_.-]+", html_part + text_part))
+    assert links == {header}
+    token = header.rsplit("/", 1)[1]
+    assert verify_token(app_settings.unsubscribe_secret, token) == gate.MOCK_TEST_ADDRESS
+    assert client.post(f"/u/{token}/one-click").status_code == 200
+    text = (tmp_path / "unsubscribed.txt").read_text(encoding="utf-8")
+    assert text.startswith(gate.MOCK_TEST_ADDRESS + "\t") and "ada@example.com" not in text

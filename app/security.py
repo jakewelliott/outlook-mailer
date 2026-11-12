@@ -28,11 +28,20 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.auth import JWT_HEADER, AccessDenied, AccessVerifier, KeysUnavailable
 from app.config import Settings
+from app.public_style import UNSUBSCRIBE_CSP
 
 log = logging.getLogger("outlook_mailer.security")
 
 PUBLIC_PATHS = frozenset({"/healthz"})
 PUBLIC_PREFIXES = ("/u/", "/img/")
+# Public pages (unsubscribe, stage 13): their own CSP (inline CSS by hash, nothing else), never
+# cached, not indexed. Applied by path, so error pages under the prefix get it too.
+UNSUBSCRIBE_PREFIX = "/u/"
+UNSUBSCRIBE_HEADERS = {
+    "Content-Security-Policy": UNSUBSCRIBE_CSP,
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex, nofollow",
+}
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 CSRF_COOKIE = "om_csrf"
@@ -40,9 +49,6 @@ CSRF_FIELD = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
 _NONCE_RE = re.compile(r"[A-Za-z0-9_-]{43}")  # secrets.token_urlsafe(32)
 
-# Forward note for later stages:
-# - Stage 13: public pages (``/u/*``) can't use ``/static/`` (admin-only), so they need their own
-#   minimal styling and CSP.
 CSP = (
     "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
     "frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
@@ -178,6 +184,8 @@ class RequestGuard:
                 )
                 if admin:
                     headers["Cache-Control"] = "no-store"
+                elif scope["path"].startswith(UNSUBSCRIBE_PREFIX):
+                    headers.update(UNSUBSCRIBE_HEADERS)
                 if new_nonce is not None:
                     headers.append("Set-Cookie", self._cookie(new_nonce))
             await send(message)

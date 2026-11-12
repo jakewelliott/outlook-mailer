@@ -126,7 +126,7 @@ def test_headers() -> None:
     assert re.fullmatch(r"<[^<>@\s]+@mail\.example\.com>", msg["Message-ID"])
     assert msg["From"].addresses[0].addr_spec == "jake@outlook.com"
     assert msg["From"].addresses[0].display_name == "The Calico Barn"
-    assert msg["List-Unsubscribe"] == f"<{r.unsubscribe_url}>"
+    assert msg["List-Unsubscribe"] == f"<{r.unsubscribe_url}/one-click>"
     assert msg["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
     for name in ("Cc", "Bcc", "Reply-To", "Sender"):
         assert name not in msg
@@ -150,14 +150,14 @@ def test_list_unsubscribe_is_one_raw_line_even_when_long() -> None:
     r = rendered(email=email)
     assert len(r.unsubscribe_url) > 300
     headers = raw_headers(build(r, to_addr=email))
-    assert f"\r\nList-Unsubscribe: <{r.unsubscribe_url}>\r\n" in headers
+    assert f"\r\nList-Unsubscribe: <{r.unsubscribe_url}/one-click>\r\n" in headers
     assert "=?" not in headers.split("List-Unsubscribe: ", 1)[1].split("\r\n", 1)[0]
 
 
 def test_no_one_click_header_for_http_links() -> None:
     r = RenderedEmail(subject="s", html="h", text="t", unsubscribe_url="http://localhost:8765/u/t")
     msg = parse(build(r))
-    assert msg["List-Unsubscribe"] == "<http://localhost:8765/u/t>"
+    assert msg["List-Unsubscribe"] == "<http://localhost:8765/u/t/one-click>"
     assert "List-Unsubscribe-Post" not in msg
     assert msg["Message-ID"].endswith("@localhost>")
 
@@ -408,3 +408,19 @@ def test_real_max_size_email_fits() -> None:
 def test_graph_payload_too_large_refused() -> None:
     with pytest.raises(MessageError):
         graph_payload(b"x" * (message.GRAPH_MAX_REQUEST_BYTES // 4 * 3 + 3))
+
+
+def test_one_click_url_must_fit_the_header_too() -> None:
+    room = message.MAX_LINE - len("List-Unsubscribe: <>")
+    base = "https://mail.example.com/u/"
+    fits = base + "a" * (room - len(base) - len("/one-click"))
+    build(RenderedEmail(subject="s", html="h", text="t", unsubscribe_url=fits))
+    with pytest.raises(MessageError):
+        build(RenderedEmail(subject="s", html="h", text="t", unsubscribe_url=fits + "a"))
+
+
+@pytest.mark.parametrize("suffix", ["?utm=1", "#top"])
+def test_unsubscribe_url_with_query_or_fragment_refused(suffix: str) -> None:
+    url = "https://mail.example.com/u/abc" + suffix
+    with pytest.raises(MessageError, match="query or fragment"):
+        build(RenderedEmail(subject="s", html="h", text="t", unsubscribe_url=url))

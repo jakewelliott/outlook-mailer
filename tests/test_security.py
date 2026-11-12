@@ -422,11 +422,12 @@ def test_help_page_has_no_inline_script_or_style(settings: Settings) -> None:
     assert 'href="/static/app.css"' in html and 'src="/static/app.js"' in html
 
 
-@pytest.mark.parametrize("path", ["/unsubscribes"])
-def test_placeholder_pages(settings: Settings, path: str) -> None:
-    r = TestClient(create_app(settings)).get(path)
-    assert r.status_code == 200
-    assert "later stage" in r.text
+def test_no_placeholder_pages_left(settings: Settings) -> None:
+    c = TestClient(create_app(settings))
+    for path in ("/", "/send/new", "/campaigns", "/unsubscribes", "/account"):
+        r = c.get(path)
+        assert r.status_code == 200, path
+        assert "later stage" not in r.text, path
 
 
 # Admin pages must send Referrer-Policy: same-origin. Under no-referrer, Chromium and Firefox

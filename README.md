@@ -10,8 +10,9 @@ with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Do
 > merge fields, the Markdown-to-email conversion of the message body, the Christmas email template with its
 > footer and hosted images, the compose page with saved footer settings and a light/dark preview, the
 > MIME message builder with the mock transport, and the send engine with its progress page,
-> pause/resume/cancel and results download, and the Microsoft sign-in (device code) with its Account page.
-> The Graph transport and the test-send gate come next.
+> pause/resume/cancel and results download, the Microsoft sign-in (device code) with its Account page, the
+> Graph transport with the test-send gate, and the unsubscribe pages with the Unsubscribes admin page. The
+> setup guide and the Unraid template come next.
 > See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
@@ -82,16 +83,17 @@ recipients or for a sample with no first name (to check fallbacks), in light or 
 line and the plain-text version. Dark is an approximation of Apple Mail's dark mode; other mail apps change colours
 their own way. The page also shows the email's size for the longest name and address on the list: it warns above
 90 KB and refuses to save above 102 KB, where Gmail cuts messages off and would hide the unsubscribe link.
-Unsubscribe links are `PUBLIC_BASE_URL/u/<token>`, where the token is the address (base64url) plus a truncated
-HMAC-SHA256 made with `UNSUBSCRIBE_SECRET` (`app/unsubscribe_tokens.py`).
+Unsubscribe links are `PUBLIC_BASE_URL/u/<token>` (the `List-Unsubscribe` header adds `/one-click`), where the
+token is the address (base64url) plus a truncated HMAC-SHA256 made with `UNSUBSCRIBE_SECRET`
+(`app/unsubscribe_tokens.py`).
 
 ### Messages
 
 Each recipient gets their own email (`app/message.py`): a standard MIME message with a plain-text part followed by
 the HTML part, both UTF-8 (quoted-printable, or base64 for text that is mostly non-Latin), addressed to that one
 person in `To` and nobody else (no `Cc`, `Bcc` or `Reply-To`). Headers: `From`, `To` (with a display name, safely
-quoted or encoded), `Subject`, `Date`, `Message-ID`, `List-Unsubscribe: <PUBLIC_BASE_URL/u/<token>>` and
-`List-Unsubscribe-Post: List-Unsubscribe=One-Click`, so mail apps that support it (Gmail, Apple Mail, Outlook.com)
+quoted or encoded), `Subject`, `Date`, `Message-ID`, `List-Unsubscribe: <PUBLIC_BASE_URL/u/<token>/one-click>`
+and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, so mail apps that support it (Gmail, Apple Mail, Outlook.com)
 can show their own unsubscribe button. A header value containing a line break or control character is refused.
 Microsoft Graph gets the message base64-encoded. With `MAIL_TRANSPORT=mock` nothing is sent: each message is written
 to `DATA_DIR/outbox/<time>-<n>-<recipient>.eml` (readable only by the app), which opens in any mail app, and the
@@ -214,6 +216,75 @@ JavaScript). **Download results (CSV)** gives one row per person: `row_no`, `ema
 
 When a send finishes or is cancelled, its uploaded CSV is deleted; the send's records and results stay. At startup
 the app also deletes CSVs of uploads more than 7 days old that were never sent.
+
+### Unsubscribe
+
+The footer of every email links to `PUBLIC_BASE_URL/u/<token>`; the `List-Unsubscribe` header carries
+`PUBLIC_BASE_URL/u/<token>/one-click`. The token holds the address and an HMAC made with `UNSUBSCRIBE_SECRET`, so it
+can't be guessed or changed to another address, and it never expires: it doesn't depend on any send, draft or
+uploaded file, so links keep working long after a send (CAN-SPAM needs at least 30 days) as long as
+`UNSUBSCRIBE_SECRET` stays the same.
+
+- **Opening the link** shows a small page that asks for the email address the message was sent to, with one
+  **Unsubscribe** button. It never shows the address (or the business name). Opening it records nothing, so mail
+  scanners that follow links don't unsubscribe anyone.
+- **Typing the address and pressing the button** records the opt-out and shows *You're unsubscribed*. Capitals,
+  spaces around it, and an international domain typed in Unicode or punycode don't matter. A different (or empty)
+  address shows the form again (HTTP 400) with *That email address doesn't match* and asks them to look at the
+  original email for the address it was sent to; what they typed isn't shown back. This step is there so that
+  someone a newsletter was forwarded to doesn't unsubscribe the original recipient by accident; it isn't a security
+  measure (the link itself is what allows unsubscribing).
+- **A mail app's own unsubscribe button** (Gmail, Apple Mail, Outlook.com) sends the RFC 8058 one-click `POST` to
+  the `/one-click` address; that records the opt-out with nothing typed. Opening the `/one-click` address in a
+  browser shows the normal confirmation page instead. Doing either again shows the same page and adds nothing.
+- A changed or cut-off link shows *This link isn't valid* (HTTP 404) and says nothing about the address.
+- If `unsubscribed.txt` can't be written (or stays locked for 10 seconds) the page says *Something went wrong, try
+  again* (HTTP 503 with `Retry-After`), never that you're unsubscribed.
+- **Rate limits** (*Too many requests*, HTTP 429 with `Retry-After`): opening the page, invalid links and mistyped
+  addresses count against the visitor's IP: 20 at once, then one every 3 seconds. Mistyped addresses also count
+  per address (5, then one a minute). A valid opt-out (one-click, or the right address typed) is never refused
+  because of the IP, since Gmail and Outlook.com send everyone's one-click requests from a few of their own servers;
+  it is only limited per address, and only once that address is already recorded (repeats beyond 5, then one a
+  minute), so the first opt-out for an address always goes through.
+- Visitors are told apart by Cloudflare's `CF-Connecting-IP` header, never by `X-Forwarded-For`. **Cloudflare must
+  pass `CF-Connecting-IP`**: don't turn on the *Remove visitor IP headers* managed transform. Without it the app
+  only sees cloudflared's address, so all visitors would share one limit; the app logs a warning (at most once an
+  hour) when an unsubscribe request arrives without the header. Requests to the LAN port directly never have it.
+- These pages need no sign-in: in Cloudflare Access, add an application (or a policy) for the path `/u/*` with the
+  action **Bypass**, as for `/img/*` and `/healthz`. That covers `/u/<token>/one-click` too (a wildcard path also
+  matches deeper paths). After setting it up, check both a browser visit and a mail provider's POST:
+
+  ```sh
+  curl -i https://<your domain>/u/x             # HTTP 404 and "This link isn't valid"
+  curl -i -X POST https://<your domain>/u/x/one-click   # the same 404 page from the app
+  ```
+
+  Both must be the app's own *This link isn't valid* page (HTTP 404), not a Cloudflare sign-in page, a redirect
+  (302) to `cloudflareaccess.com`, or a challenge page. The app itself never asks for the Access token on them, and
+  they use no cookies. They have their own minimal styling and a strict Content-Security-Policy (no scripts, no
+  images, inline CSS allowed only by its hash, forms may post only to this site, no framing), and are never cached.
+- **No Cloudflare challenges on `/u/*`**: Bot Fight Mode, WAF managed challenges / JS challenges and *I'm Under
+  Attack* mode must not apply to `/u/*` (add a skip rule or configuration rule for that path, or leave them off).
+  Gmail and Outlook.com send the one-click `POST` from their servers and can't solve a challenge, so those opt-outs
+  would be lost without anyone noticing. (More in `docs/cloudflare.md`, stage 14.)
+- The form's body is limited to 4 KB and the typed address to 320 bytes; anything bigger is treated as a mistyped
+  address (HTTP 400). The one-click address never reads the request body.
+
+The opt-out is appended to `DATA_DIR/unsubscribed.txt` as `email<TAB>time` (e.g.
+`ada@example.com<TAB>2026-12-01T10:00:05-05:00`, in `TZ`), once per address: an address already in the file in any
+capitalisation, or with its international domain written in Unicode or punycode, isn't added again. Writes take a
+file lock (waiting at most 10 seconds for another writer) and are flushed to disk before the page says you're
+unsubscribed; a hand-edited file whose last line has no newline, or that starts with a byte-order mark (Windows
+Notepad), is handled. A running send rereads the file before every email (comparing its content, so even a hand edit
+that keeps the size and time is noticed) and skips anyone in it; if it can't read the file it sends nothing and tries
+again later. You can add lines by hand (an address on its own is enough); edit the file only while the app is
+stopped, or append without changing existing lines.
+
+The **Unsubscribes** page in the menu lists the file's entries with when they unsubscribed (newest first), the
+number of different addresses (an address listed twice, e.g. in other capitals, counts once; the page then also
+says how many entries the file has), and **Download unsubscribed.txt** for the file as it is (an empty file if nobody
+has unsubscribed). Use it to remove those people from your customer list. Like every admin page it is behind
+Cloudflare Access.
 
 ## Decisions
 

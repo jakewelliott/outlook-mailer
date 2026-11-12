@@ -136,7 +136,7 @@ Stage 5 (`app/merge.py`) leaves three hazards for stage 6. Each needs a test.
 ## Sending
 
 - MS Graph `POST /v1.0/me/sendMail` with MIME content (base64 `text/plain` body), so the email is
-  `multipart/alternative` (text + HTML) and carries `List-Unsubscribe: <https://.../u/<token>>` and
+  `multipart/alternative` (text + HTML) and carries `List-Unsubscribe: <https://.../u/<token>/one-click>` and
   `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. Copies saved to Sent Items. If MIME headers are stripped,
   the footer link still satisfies CAN-SPAM.
 - Delegated `Mail.Send` + `User.Read` + `offline_access`, device code sign-in from the UI, authority `/consumers`.
@@ -158,15 +158,65 @@ Stage 5 (`app/merge.py`) leaves three hazards for stage 6. Each needs a test.
 ## Unsubscribe
 
 - Token: `base64url(email) . HMAC-SHA256(UNSUBSCRIBE_SECRET, email)` truncated. Verified with constant-time compare.
-- `GET /u/<token>`: a small confirmation page with one "Unsubscribe" button (so link scanners don't unsubscribe
-  people). `POST /u/<token>` (and the RFC 8058 one-click POST) records the opt-out and shows "You're unsubscribed".
+- `GET /u/<token>` (the footer link): a small confirmation page that asks for the email address the message was sent
+  to, with one "Unsubscribe" button (so link scanners don't unsubscribe people). `POST /u/<token>` (the form) records
+  the opt-out and shows "You're unsubscribed" only if the typed address matches the token's (Jake, 2026-11-12);
+  otherwise the form is shown again saying it doesn't match. `POST /u/<token>/one-click` (the RFC 8058 one-click POST;
+  the `List-Unsubscribe` header's URL) records with nothing typed.
 - Recording: append `email<TAB>timestamp` to `unsubscribed.txt` (skip if already present), with a file lock.
 - Rate-limited, no auth, no other data revealed. Must keep working at least 30 days after a send.
 - The rate limiter keys on the `CF-Connecting-IP` header (Cloudflare sets it and overwrites client values), falling
   back to the socket peer address when it is absent. Never on `request.client.host` or `X-Forwarded-For`: with
   `--proxy-headers` uvicorn takes the leftmost `X-Forwarded-For` entry, which the client controls. Only someone
   hitting the LAN port directly could spoof `CF-Connecting-IP`, which is acceptable. Logs may show spoofed IPs.
+  Cloudflare must pass `CF-Connecting-IP` (don't enable "Remove visitor IP headers"); behind cloudflared the
+  fallback peer is cloudflared, so all visitors would share one bucket. A valid opt-out is never refused because of
+  the IP limit (mail providers send everyone's one-click POSTs from their own servers).
 - Admin page shows the list and offers a download of the file.
+- As built (stage 13): `app/unsubscribe_pages.py` (public routes `GET`/`HEAD`/`POST /u/{token}` and
+  `GET`/`HEAD`/`POST /u/{token}/one-click`), `app/unsubscribes.py` (`record_unsubscribe`: flock, `address_keys`
+  dedupe, newline repair, fsync; the watcher compares a content hash), `app/ratelimit.py` (token bucket with
+  `allow`/`has_room`/`retry_after`; key `CF-Connecting-IP`, else the peer only when no `X-Forwarded-For` is present,
+  else one shared bucket), `app/public_style.py` + `app/templates/public/` (inline CSS allowed by hash; the CSP is set
+  for all `/u/` responses in `RequestGuard`), `app/ui_unsubscribes.py` (admin `/unsubscribes` and
+  `/unsubscribes/unsubscribed.txt`). Invalid tokens: one generic 404 page; write failure: 503. The token is the only
+  protection a public POST needs (DECISIONS "Public POST protection"). Tokens don't expire and use only
+  `UNSUBSCRIBE_SECRET`. Cloudflare Access needs a Bypass for `/u/*` (it covers `/u/<token>/one-click`).
+- As built, fix round 1 (2026-11-12):
+  - Routes: the form at `POST /u/<token>` needs the typed `email` (matched with `address_keys`: case, whitespace,
+    Unicode/punycode; mismatch, blank or malformed body: the form again with HTTP 400, the typed value not echoed,
+    no hint of the address). `POST /u/<token>/one-click` records with no body requirements; `GET`/`HEAD` on it show
+    the confirmation page. `app/message.py` writes `List-Unsubscribe: <.../u/<token>/one-click>`
+    (`unsubscribe_tokens.one_click_url`; the length check uses that URL); the footer and text part keep the page URL.
+    The typed address guards against accidental unsubscribes from forwarded emails; it isn't a security boundary.
+  - Rate limits, checked after the token is verified: per IP (20, then 1 per 3 s) for `GET`/`HEAD`, invalid tokens
+    and typed-address mismatches; per address (5, then 1 a minute) for mismatches (`mismatch:<email>`) and for
+    recording POSTs once the address is already recorded (`repeat:<email>`, drained only by POSTs that found it in
+    the file, so the first opt-out is never refused). Valid recording POSTs never use the IP bucket. No global
+    ceiling. `Retry-After` is the exact wait rounded up (3 s, not 4).
+  - A `/u/` request without `CF-Connecting-IP` logs a warning at most once an hour.
+  - `unsubscribed.txt` is decoded as `utf-8-sig` (leading BOM dropped; a BOM starting any line is ignored too), for
+    the dedupe in `record_unsubscribe`, the watcher and the admin page.
+  - Lock waits are bounded: `LOCK_NB` every 50 ms for up to 10 s (injectable clock and sleep), then `LockTimeout`
+    (an `OSError`): the public POSTs answer 503 with `Retry-After: 60`; the send worker's watcher raises, so the step
+    fails before sending and is retried after the worker's error pause (unchanged fail-safe behaviour).
+  - Admin page: the count is of different addresses (`count_addresses`), with "The file has N entries" added when
+    some address is listed more than once.
+  - Lock tests are deterministic: a `LOCK_EX | LOCK_NB` probe on a separate descriptor while the first writer holds
+    the lock, and a spy on `fcntl.flock` plus an injected sleep that forces the order (no wall-clock waits).
+- As built, fix round 2 (2026-11-12):
+  - The typed value is a mismatch, before any normalising or email-validator call, if it is over 320 bytes of UTF-8
+    (`MAX_TYPED_BYTES = MAX_EMAIL_BYTES`; was 1,280 characters). The comparison now runs in the worker thread
+    together with the recording (`_submit`), not on the event loop. Test: spies on `address_keys` and
+    email-validator see no call for long combining-mark strings, and the matching call runs off the loop.
+  - Form body limit 4 KB (`MAX_FORM_BYTES`): refused from `Content-Length` or once the streamed body passes it
+    (never buffered further), answered with the normal 400 mismatch page. The one-click route never reads its body
+    (tested with a `receive` that fails if called).
+  - `one_click_url` raises `ValueError` for a URL with `?` or `#`; `app/message.py` refuses one first
+    (`MessageError`).
+  - README: post-deploy `curl -X POST https://<domain>/u/x/one-click` check (the app's 404, not Access), and Bot
+    Fight Mode / WAF challenges / Under Attack mode must not apply to `/u/*` (stage 14 expands this in
+    `docs/cloudflare.md`).
 
 ## Stages
 
