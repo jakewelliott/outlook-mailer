@@ -1,0 +1,43 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "New send: start" %}
+{% block content %}
+<h1>Start sending</h1>
+<p class="muted">Step 5: check the details and start. <a href="/send/{{ draft_id }}/compose">Back to compose</a></p>
+
+{% if plan.errors %}
+<div class="error" role="alert">
+  <p>Sending can't start yet:</p>
+  <ul>
+  {% for e in plan.errors %}<li>{{ e }}</li>{% endfor %}
+  </ul>
+</div>
+{% if existing %}<p><a href="/campaigns/{{ existing }}">View send #{{ existing }}</a></p>
+{% elif active_id %}<p><a href="/campaigns/{{ active_id }}">View send #{{ active_id }}</a></p>{% endif %}
+{% endif %}
+
+<section class="card">
+  <h2>What will happen</h2>
+  <table class="ref">
+    <tbody>
+      <tr><th scope="row">Recipients</th><td id="start-count">{{ count }}</td></tr>
+      {% if plan.content %}<tr><th scope="row">Subject</th><td>{{ plan.content.subject }}</td></tr>{% endif %}
+      <tr><th scope="row">Pacing</th><td>{{ rate }} per minute (one every {{ "%g" | format(spacing) }} seconds)</td></tr>
+      <tr><th scope="row">Daily limit</th><td>{{ cap }} per rolling 24 hours, across all sends
+        ({{ plan.used_today }} used in the last 24 hours). When it is reached the send pauses and carries on by itself.</td></tr>
+      <tr><th scope="row">Estimated time</th><td id="start-estimate">{{ plan.estimate }}</td></tr>
+      <tr><th scope="row">Transport</th><td>{% if transport == "mock" %}mock: each message is written to the outbox folder as an <code>.eml</code> file, nothing is emailed{% else %}Microsoft Graph{% endif %}</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Each person on the list is checked against <code>unsubscribed.txt</code> again just before their
+    email goes out. You can pause, resume or cancel at any time. The uploaded CSV is deleted when the send
+    finishes or is cancelled; the send log and results stay.</p>
+</section>
+
+{% if not plan.errors %}
+<form method="post" action="/send/{{ draft_id }}/start">
+  {{ csrf_field(request) }}
+  <input type="hidden" name="content_hash" value="{{ plan.content_hash }}">
+  <p><button type="submit" id="start-send">Start sending to {{ count }} recipients</button></p>
+</form>
+{% endif %}
+{% endblock %}

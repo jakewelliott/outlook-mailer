@@ -180,8 +180,8 @@ Each stage: one coding agent, one reviewer, one commit to `main`. Tests run in D
 | 9 | Message builder (MIME) + transport interface + mock transport | valid multipart/alternative `.eml`; single recipient; List-Unsubscribe headers |
 | 10 | Send job engine, progress UI, results CSV, CSV deletion | rate/cap/retry/pause/resume/cancel; exactly-once across restart; `unsubscribed.txt` checked at send time |
 | 11 | Microsoft device-code sign-in, encrypted token cache, account page | mocked MSAL tests; manual sign-in (needs Jake) |
-| 12 | Graph transport, test-send gate | respx tests; manual real test send and header check (needs Jake) |
+| 12 | Graph transport, test-send gate | respx tests; manual real test send and header check (needs Jake). Map responses to `SendResult` as documented in `app/transport/base.py` (retryable only when certainly not accepted; otherwise unknown); request timeout below `SHUTDOWN_GRACE_SECONDS` (15 s) |
 | 13 | Unsubscribe pages, `unsubscribed.txt`, admin view/download | token tests; GET doesn't unsubscribe; POST appends once. Note: `/static/` is admin-only, so public pages need their own minimal styling and CSP |
-| 14 | README (decisions + fresh-clone setup), `docs/entra-setup.md`, `docs/cloudflare.md`, `unraid/outlook-mailer.xml`, v1.0.0 | someone can set up from a fresh clone using only the README |
+| 14 | README (decisions + fresh-clone setup), `docs/entra-setup.md`, `docs/cloudflare.md`, `unraid/outlook-mailer.xml`, v1.0.0 | someone can set up from a fresh clone using only the README; the Unraid template sets `--stop-timeout=30` in Extra Parameters (see DECISIONS "Shutdown timing") |
 
 Stages 1–10 and 13 need no Microsoft account (`MAIL_TRANSPORT=mock`, `AUTH_DISABLED=1` in tests).

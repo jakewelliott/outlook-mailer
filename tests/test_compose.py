@@ -302,7 +302,7 @@ def test_migrations_upgrade_v1_database(tmp_path: Path) -> None:
     database = db.Database(path)
     database.init()
     with database.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 3
         assert conn.execute("SELECT original_name FROM drafts").fetchone()[0] == "old.csv"
     compose.save_content(database, "c" * 32, GOOD)
     assert compose.get_content(database, "c" * 32) == GOOD

@@ -8,8 +8,9 @@ with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Do
 > **Status: under construction.** So far: configuration, `/healthz`, the Docker image, the admin UI shell with
 > the Cloudflare Access check and the help page, CSV upload with column mapping and the validation report,
 > merge fields, the Markdown-to-email conversion of the message body, the Christmas email template with its
-> footer and hosted images, the compose page with saved footer settings and a light/dark preview, and the
-> MIME message builder with the mock transport. The send engine comes next.
+> footer and hosted images, the compose page with saved footer settings and a light/dark preview, the
+> MIME message builder with the mock transport, and the send engine with its progress page,
+> pause/resume/cancel and results download. Microsoft sign-in and the Graph transport come next.
 > See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
@@ -94,6 +95,62 @@ can show their own unsubscribe button. A header value containing a line break or
 Microsoft Graph gets the message base64-encoded. With `MAIL_TRANSPORT=mock` nothing is sent: each message is written
 to `DATA_DIR/outbox/<time>-<n>-<recipient>.eml` (readable only by the app), which opens in any mail app, and the
 `From` is the placeholder `sender@example.invalid`.
+
+### Sending
+
+When the preview looks right, **Start sending** on the compose page opens a confirmation page: how many people
+will be emailed, the pacing, the daily limit and an estimated time. Starting takes a snapshot of the saved message
+and of the eligible recipients, so editing the draft afterwards doesn't change a running send. Only one send can be
+unfinished at a time, and each upload is sent once. (From stage 12, sending also needs a successful test send of
+the current version of the message to yourself; `app/gate.py` is where that check goes.)
+
+Each send records the transport it was started with (`MAIL_TRANSPORT`, shown on the send's page and in the list),
+and only that transport ever sends it. A send started in `mock` mode that is still unfinished when the app is
+switched to `graph` is not sent: its page says "This send was started in mock mode; cancel it and start a new one",
+and Resume is refused. Because each upload is sent once, **a mock test run uses up the draft**: upload the CSV again
+for the real send.
+
+A background worker in the app sends one email at a time:
+
+- **Pacing**: one message every `60 / SEND_RATE_PER_MINUTE` seconds (10 s by default).
+- **Daily limit**: at most `DAILY_SEND_CAP` messages in any rolling 24 hours, counted across all sends. When it is
+  reached the send shows *Paused: daily limit reached* with the time it carries on, and resumes by itself.
+- **Opt-outs**: `unsubscribed.txt` is checked again just before each email, so someone who unsubscribes during a
+  send is skipped (shown as *Skipped (unsubscribed)*). International domains match whether written in Unicode or
+  punycode.
+- **Retries**: only a failure where the email certainly wasn't accepted is retried: Microsoft couldn't be
+  reached or the connection timed out before the email was sent, or Microsoft answered 429/503 (busy). It is retried
+  after 30 seconds, 2 minutes and 10 minutes, 3 attempts in all; then it is marked failed. A permanent rejection
+  (another 4xx answer) is not retried. Other people are sent to while one waits for a retry.
+- **Throttling**: when Microsoft says how long to wait (`Retry-After`), **nothing is sent to anyone** before that
+  time, even after a restart; the send's page shows the time. Being asked to wait isn't counted as a failure or as
+  one of the person's 3 attempts, but if it happens 10 times in a row without a success the send stops.
+- **Stops**: if the Microsoft sign-in has expired or been revoked, 5 attempts in a row fail, or Microsoft keeps
+  throttling, the send stops (*Stopped by an error*) with the reason. Fix the cause (reconnect on the Account page)
+  and press **Resume**. A send you paused stays paused; the reason is shown and logged.
+- **Exactly once**: each person is marked "sending" in the database before the email is handed to the transport,
+  and the result is recorded straight after (retried a few times if the database is busy; nothing else is sent
+  until it is saved; after 10 failed tries the send stops, and after a restart that person is reported as
+  "interrupted"). If nobody can tell whether the email went out, it is marked failed with "may or may not have
+  been delivered; check Sent Items" and is **not** resent automatically (a double email can't be taken back; check
+  Sent Items and send it yourself if needed). That happens when the app is stopped or crashes mid-send ("interrupted
+  during send — ..."), and when the connection fails after the email was handed over: a timeout waiting for
+  Microsoft's answer, the connection dropping mid-answer, or a 500/502/504 server error ("outcome unknown — ...").
+  These count against the daily limit and as failed attempts. On a normal shutdown the worker waits up to 15 s for
+  an in-flight email to finish first; the Graph request timeout (stage 12) is shorter than that, and the container's
+  stop grace period (`stop_grace_period: 30s` in `compose.yaml`) is longer, so the result is always saved. Docker's
+  default is only 10 s: if you run the container another way, give it at least 30 s (`docker stop -t 30`, or
+  `--stop-timeout=30` in the Unraid template's Extra Parameters). Everything else carries on after a restart.
+- **Pause, resume, cancel**: buttons on the send's page. Cancel keeps what was sent and marks everyone still
+  waiting as not sent.
+
+**Sends** in the menu lists every send. A send's page shows the counts by status, a progress bar, the next send
+time, errors and the latest 20 events; it updates itself every few seconds (or use **Refresh** without
+JavaScript). **Download results (CSV)** gives one row per person: `row_no`, `email`, `first_name`, `status`,
+`attempts`, `sent_at` (UTC) and `error` (cells that a spreadsheet would read as a formula are prefixed with `'`).
+
+When a send finishes or is cancelled, its uploaded CSV is deleted; the send's records and results stay. At startup
+the app also deletes CSVs of uploads more than 7 days old that were never sent.
 
 ## Decisions
 

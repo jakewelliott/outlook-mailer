@@ -18,11 +18,12 @@ STATIC_DIR = APP_DIR / "static"
 NAV = [
     ("/", "Home"),
     ("/send/new", "New send"),
+    ("/campaigns", "Sends"),
     ("/unsubscribes", "Unsubscribes"),
     ("/account", "Account"),
 ]
-# Pages with real routes elsewhere: "/" here, "/send/new" in ui_send.
-PLACEHOLDERS = {path: label for path, label in NAV if path not in ("/", "/send/new")}
+# Pages with real routes elsewhere: "/" here, "/send/new" in ui_send, "/campaigns" in ui_campaigns.
+PLACEHOLDERS = {path: label for path, label in NAV if path not in ("/", "/send/new", "/campaigns")}
 
 
 def _templates() -> Jinja2Templates:

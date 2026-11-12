@@ -1,0 +1,25 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "Sends" %}
+{% block content %}
+<h1>Sends</h1>
+{% if items %}
+<table class="ref">
+  <thead><tr><th>#</th><th>Created</th><th>List</th><th>Transport</th><th>Status</th><th>Sent</th><th>Failed</th></tr></thead>
+  <tbody>
+  {% for s in items %}
+    <tr>
+      <td><a href="/campaigns/{{ s.campaign.id }}">#{{ s.campaign.id }}</a></td>
+      <td>{{ local_time(s.campaign.created_at, zone) }}</td>
+      <td>{{ s.original_name }}</td>
+      <td>{{ s.campaign.transport }}</td>
+      <td>{{ s.campaign.status_label }}</td>
+      <td>{{ s.counts.sent }} of {{ s.campaign.total }}</td>
+      <td>{{ s.counts.failed }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No sends yet. <a href="/send/new">Start a new send</a>.</p>
+{% endif %}
+{% endblock %}

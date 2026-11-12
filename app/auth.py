@@ -25,8 +25,8 @@ LEEWAY_SECONDS = 30
 FETCH_TIMEOUT_SECONDS = 5.0
 # Keys are refreshed when older than this, so rotated keys are picked up without a restart.
 KEYS_MAX_AGE_SECONDS = 3600.0
-# An unknown ``kid`` triggers a refetch at most this often, so forged tokens can't make us
-# hammer the certs endpoint.
+# With keys cached, a refetch (unknown ``kid``, or stale keys) is tried at most this often after
+# the last attempt, so forged tokens or a Cloudflare outage can't make us hammer the endpoint.
 MIN_REFETCH_INTERVAL_SECONDS = 30.0
 
 
@@ -44,17 +44,36 @@ class Identity:
 
 
 class AccessKeySet:
-    """Caches the team's public signing keys, fetched with async httpx."""
+    """Caches the team's public signing keys, fetched with async httpx.
+
+    ``_fetched_at`` is when the keys were last fetched successfully (their age);
+    ``_attempted_at`` is when a fetch was last tried, successful or not. With keys cached, a
+    refetch (keys stale, or a token names an unknown ``kid``) is tried at most every
+    ``MIN_REFETCH_INTERVAL_SECONDS`` after the last attempt, so neither forged tokens nor an
+    outage at Cloudflare make us hammer the certs endpoint; the cached keys are used meanwhile.
+    With nothing cached every request tries (and fails with ``KeysUnavailable``, a 503).
+    """
 
     def __init__(self, certs_url: str, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.certs_url = certs_url
         self._transport = transport
         self._keys: dict[str, jwt.PyJWK] = {}
         self._fetched_at: float | None = None
+        self._attempted_at: float | None = None
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    def _since(stamp: float | None) -> float:
+        return float("inf") if stamp is None else time.monotonic() - stamp
+
     def _age(self) -> float:
-        return float("inf") if self._fetched_at is None else time.monotonic() - self._fetched_at
+        return self._since(self._fetched_at)
+
+    def _should_refresh(self, kid: str) -> bool:
+        if not self._keys:
+            return True
+        wanted = self._age() > KEYS_MAX_AGE_SECONDS or kid not in self._keys
+        return wanted and self._since(self._attempted_at) > MIN_REFETCH_INTERVAL_SECONDS
 
     async def get(self, kid: str) -> jwt.PyJWK | None:
         """Return the key for ``kid``, or None if Cloudflare does not publish it.
@@ -66,13 +85,12 @@ class AccessKeySet:
             return self._keys[kid]
         async with self._lock:
             # Another request may have refreshed the keys while we waited.
-            if self._age() > KEYS_MAX_AGE_SECONDS or (
-                kid not in self._keys and self._age() > MIN_REFETCH_INTERVAL_SECONDS
-            ):
+            if self._should_refresh(kid):
                 await self._refresh()
         return self._keys.get(kid)
 
     async def _refresh(self) -> None:
+        self._attempted_at = time.monotonic()
         try:
             async with httpx.AsyncClient(
                 timeout=FETCH_TIMEOUT_SECONDS, transport=self._transport
@@ -83,8 +101,6 @@ class AccessKeySet:
         except (httpx.HTTPError, ValueError) as exc:
             if self._keys:
                 log.warning("Could not refresh Cloudflare Access keys, using cached ones: %s", exc)
-                # Don't retry on every request while Cloudflare is unreachable.
-                self._fetched_at = time.monotonic() - KEYS_MAX_AGE_SECONDS + 60
                 return
             log.error("Could not fetch Cloudflare Access keys from %s: %s", self.certs_url, exc)
             raise KeysUnavailable from exc

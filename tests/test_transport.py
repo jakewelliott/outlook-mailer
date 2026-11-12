@@ -39,6 +39,9 @@ def test_result_constructors() -> None:
     assert (p.ok, p.retryable, p.auth_error) == (False, False, False)
     a = SendResult.auth("signed out")
     assert (a.ok, a.retryable, a.auth_error) == (False, False, True)
+    u = SendResult.unknown("read timeout")
+    assert (u.ok, u.retryable, u.auth_error, u.outcome_unknown) == (False, False, False, True)
+    assert r.throttled and not SendResult.retry("timeout").throttled and not u.throttled
 
 
 @pytest.mark.parametrize(
@@ -50,6 +53,10 @@ def test_result_constructors() -> None:
         {"ok": False, "error": "x", "auth_error": True, "retryable": True},
         {"ok": False, "error": "x", "retry_after": 5},
         {"ok": False, "error": "x", "retryable": True, "retry_after": -1},
+        {"ok": True, "outcome_unknown": True},
+        {"ok": False, "error": "x", "outcome_unknown": True, "retryable": True},
+        {"ok": False, "error": "x", "outcome_unknown": True, "auth_error": True},
+        {"ok": False, "error": "x", "outcome_unknown": True, "retry_after": 5},
     ],
 )
 def test_inconsistent_results_refused(kwargs: dict[str, object]) -> None:

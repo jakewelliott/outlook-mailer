@@ -1,0 +1,85 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "Send #" ~ c.id %}
+{% block content %}
+<h1>Send #{{ c.id }}</h1>
+<p class="muted">{{ draft_name }} · {{ c.total }} recipients · subject “{{ c.content.subject }}” ·
+  transport: <strong id="transport">{{ c.transport }}</strong>{% if c.transport == "mock" %} (writes .eml files, nothing is emailed){% endif %} ·
+  <a href="/campaigns">All sends</a></p>
+{% if p.transport_mismatch %}<p class="warn-box" role="alert" id="transport-mismatch">{{ p.transport_mismatch }}
+  (The app now runs with MAIL_TRANSPORT={{ current_transport }}, so this send won't go out.)</p>{% endif %}
+
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+<section class="card" id="campaign-progress" data-url="/campaigns/{{ c.id }}/progress"
+  data-status="{{ c.status }}" data-poll="{{ poll_seconds }}"{% if p.final %} data-final="1"{% endif %}>
+  <h2>Progress</h2>
+  <p class="status-line">Status: <strong data-field="status_label" class="status-{{ c.status }}">{{ p.status_label }}</strong></p>
+  <p><progress id="progress-bar" max="{{ p.total }}" value="{{ p.done }}">{{ p.percent }}%</progress>
+    <span><span data-field="done">{{ p.done }}</span> of {{ p.total }} done (<span data-field="percent">{{ p.percent }}</span>%)</span></p>
+  <table class="ref counts">
+    <tbody>
+    {% for s in statuses %}
+      <tr><th scope="row">{{ labels[s] }}</th><td data-count="{{ s }}">{{ p.counts[s] }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p data-show="next_send_at"{% if not p.next_send_at %} hidden{% endif %}>Next message: <span data-field="next_send_at">{{ p.next_send_at or "" }}</span></p>
+  <p data-show="throttled_until" class="warn-box"{% if not p.throttled_until %} hidden{% endif %}>The mail server asked to slow down:
+    nothing is sent before <span data-field="throttled_until">{{ p.throttled_until or "" }}</span>.</p>
+  <p data-show="resume_at" class="warn-box"{% if not p.resume_at %} hidden{% endif %}>The daily limit has been reached.
+    Sending carries on by itself at <span data-field="resume_at">{{ p.resume_at or "" }}</span>.</p>
+  <p data-show="last_error" class="error"{% if not p.last_error %} hidden{% endif %}><span data-field="last_error">{{ p.last_error or "" }}</span></p>
+  {% if p.started_at %}<p class="muted">Started {{ p.started_at }}{% if p.finished_at %} · ended {{ p.finished_at }}{% endif %}</p>{% endif %}
+  <p class="muted"><a href="/campaigns/{{ c.id }}">Refresh</a><span id="live-note" hidden> · updates automatically</span></p>
+</section>
+
+{% if can_pause or can_resume or can_cancel %}
+<section class="card">
+  <h2>Controls</h2>
+  <div class="inline-form">
+  {% if can_pause %}
+    <form method="post" action="/campaigns/{{ c.id }}/pause">{{ csrf_field(request) }}<button type="submit" id="pause">Pause</button></form>
+  {% endif %}
+  {% if can_resume %}
+    <form method="post" action="/campaigns/{{ c.id }}/resume">{{ csrf_field(request) }}<button type="submit" id="resume">Resume</button></form>
+  {% endif %}
+  </div>
+  {% if c.status == "stopped_error" %}
+  <p class="muted">Resume once the cause is fixed (for a sign-in problem, reconnect on the <a href="/account">Account</a> page first).</p>
+  {% endif %}
+  {% if can_cancel %}
+  <details>
+    <summary>Cancel this send…</summary>
+    <p>Messages already sent stay sent; everyone still waiting is not emailed. The uploaded CSV is deleted.
+      This can't be undone.</p>
+    <form method="post" action="/campaigns/{{ c.id }}/cancel">{{ csrf_field(request) }}<button type="submit" class="danger" id="cancel">Yes, cancel the send</button></form>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if errors %}
+<section class="card">
+  <h2>Problems</h2>
+  <table class="ref">
+    <thead><tr><th>Row</th><th>Email</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+    <tbody>
+    {% for e in errors %}
+      <tr><td>{{ e.row_no }}</td><td>{{ e.email }}</td><td>{{ labels[e.status] }}</td><td>{{ e.attempts }}</td><td>{{ e.error }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Latest events</h2>
+  <ol class="events" id="events" reversed>
+  {% for e in p.events %}
+    <li><span class="muted">{{ e.at }}</span> {{ e.message }}</li>
+  {% endfor %}
+  </ol>
+</section>
+
+<p><a class="button" href="/campaigns/{{ c.id }}/results.csv">Download results (CSV)</a></p>
+{% endblock %}

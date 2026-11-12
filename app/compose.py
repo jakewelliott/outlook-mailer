@@ -15,7 +15,9 @@ for an empty first name, which gets the merge fallbacks), so the number shown is
 bound (see ``size_check`` for the small gap).
 """
 
+import hashlib
 import html
+import json
 import sqlite3
 import unicodedata
 import urllib.parse
@@ -376,3 +378,25 @@ def save_content(db: Database, draft_id: str, c: DraftContent) -> None:
             "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             [(name, str(row[name])) for name in SETTING_FIELDS],
         )
+
+
+# --- snapshots (send jobs) ---------------------------------------------------------------------
+
+
+def to_json(c: DraftContent) -> str:
+    """The content as canonical JSON (sorted keys), as stored in a campaign's snapshot."""
+    return json.dumps(asdict(c), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def from_json(data: str) -> DraftContent:
+    values = json.loads(data)
+    return DraftContent(**{name: values[name] for name in _COLUMNS})
+
+
+def content_hash(c: DraftContent) -> str:
+    """SHA-256 of ``to_json(c)``: identifies a version of the content.
+
+    A campaign records the hash of its snapshot; the test-send gate (stage 12) requires a
+    successful test send of the same hash before a bulk send can start.
+    """
+    return hashlib.sha256(to_json(c).encode()).hexdigest()

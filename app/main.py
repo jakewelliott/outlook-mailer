@@ -17,11 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from starlette.types import Scope
 
-from app import render, ui, ui_compose, ui_send
+from app import campaigns, render, ui, ui_campaigns, ui_compose, ui_send
 from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
 from app.db import Database
 from app.security import CsrfSigner, Forbidden, RequestGuard, forbidden_response
+from app.sender import Clock, SendWorker, utcnow
+from app.transport import Transport, make_transport
 
 log = logging.getLogger("outlook_mailer")
 
@@ -45,10 +47,20 @@ class EmailImages(StaticFiles):
         return response
 
 
-def create_app(settings: Settings | None = None, verifier: AccessVerifier | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    verifier: AccessVerifier | None = None,
+    *,
+    transport: Transport | None = None,
+    clock: Clock | None = None,
+    run_worker: bool = True,
+) -> FastAPI:
     """Build the app. Settings are loaded from the environment when not given.
 
-    ``verifier`` overrides the Cloudflare Access verifier (tests).
+    ``verifier`` overrides the Cloudflare Access verifier, ``transport`` the one named by
+    ``MAIL_TRANSPORT``, and ``clock`` the time source of the send worker and campaign pages.
+    With ``run_worker=False`` the send worker is built (``app.state.worker``) but not started,
+    so tests can drive it with ``step``. All for tests.
 
     Raises ``ConfigError`` if the environment is invalid.
     """
@@ -63,17 +75,45 @@ def create_app(settings: Settings | None = None, verifier: AccessVerifier | None
         )
 
     db = Database(Path(settings.data_dir) / "app.db")
+    clock = clock or utcnow
+    if transport is None:
+        try:
+            transport = make_transport(settings)
+        except NotImplementedError as exc:
+            log.warning("No send worker: %s", exc)
+    worker = SendWorker(db, settings, transport, clock=clock) if transport is not None else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db.init()  # create the schema at startup so a bad DATA_DIR fails early
-        yield
+        now = clock()
+        interrupted = campaigns.recover_interrupted(db, now)
+        if interrupted:
+            log.warning(
+                "%d recipient(s) were mid-send when the app stopped; marked failed, not resent.",
+                interrupted,
+            )
+        cleaned = campaigns.cleanup_csvs(db, settings.data_dir, now)
+        if cleaned:
+            log.info("Deleted %d uploaded CSV file(s) no longer needed.", cleaned)
+        if worker is not None and run_worker:
+            worker.start()
+        try:
+            yield
+        finally:
+            if worker is not None:
+                await worker.stop()
+            if transport is not None:
+                await transport.aclose()
+            db.close()
 
     app = FastAPI(
         title="outlook-mailer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
     )
     app.state.settings = settings
     app.state.db = db
+    app.state.clock = clock
+    app.state.worker = worker
     app.state.csrf_signer = CsrfSigner(settings.unsubscribe_secret)
     app.add_middleware(RequestGuard, settings=settings, verifier=verifier)
     app.add_exception_handler(Forbidden, forbidden_response)
@@ -88,6 +128,7 @@ def create_app(settings: Settings | None = None, verifier: AccessVerifier | None
     app.include_router(ui_send.upload_router)
     app.include_router(ui_send.router)
     app.include_router(ui_compose.router)
+    app.include_router(ui_campaigns.router)
     # Admin-only: the guard protects everything outside the public paths.
     app.mount("/static", StaticFiles(directory=ui.STATIC_DIR), name="static")
     # Public: images linked from sent emails (the guard treats /img/* as public).

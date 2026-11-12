@@ -173,8 +173,33 @@ def test_unknown_kid_refetches_once_then_throttles(client: TestClient, certs: re
     assert client.get("/", headers=auth(make_token(OTHER_KEY, kid="k2"))).status_code == 403
     guard_keys = _key_set(client)
     guard_keys._fetched_at -= 60
+    guard_keys._attempted_at -= 60
     assert client.get("/", headers=auth(make_token(OTHER_KEY, kid="k2"))).status_code == 200
     assert certs.call_count == 2
+
+
+def test_outage_with_cached_keys_throttles_refetches(
+    client: TestClient, certs: respx.Route
+) -> None:
+    assert client.get("/", headers=auth()).status_code == 200
+    assert certs.call_count == 1
+    keys = _key_set(client)
+    certs.mock(side_effect=httpx.ConnectTimeout("down"))
+    # Keys are stale: the next request tries once, fails, and keeps using the cached keys.
+    keys._fetched_at -= 3601
+    keys._attempted_at -= 3601
+    assert client.get("/", headers=auth()).status_code == 200
+    assert certs.call_count == 2
+    # During the outage neither stale keys nor unknown kids refetch within the interval.
+    for _ in range(3):
+        assert client.get("/", headers=auth()).status_code == 200
+        assert client.get("/", headers=auth(make_token(OTHER_KEY, kid="k2"))).status_code == 403
+    assert certs.call_count == 2
+    # Once the interval has passed since the last *attempt*, one more try.
+    keys._attempted_at -= 31
+    assert client.get("/", headers=auth(make_token(OTHER_KEY, kid="k2"))).status_code == 403
+    assert client.get("/", headers=auth(make_token(OTHER_KEY, kid="k2"))).status_code == 403
+    assert certs.call_count == 3
 
 
 def _key_set(client: TestClient) -> Any:
@@ -266,7 +291,11 @@ def test_csrf_missing_or_invalid_rejected(client: TestClient) -> None:
     token = csrf_session(client, h)
     assert post(client, h).status_code == 403
     assert post(client, h, data={"csrf_token": "nope"}).status_code == 403
-    assert post(client, h, data={"csrf_token": token[:-1] + "A"}).status_code == 403
+    # Change the first character to a different one. (Replacing the last one with "A" left the
+    # token unchanged 1 time in 16: it carries only 4 bits, so "A" is one of 16 values.)
+    tampered = ("B" if token[0] == "A" else "A") + token[1:]
+    assert tampered != token
+    assert post(client, h, data={"csrf_token": tampered}).status_code == 403
 
 
 def test_csrf_token_bound_to_cookie_and_user(client: TestClient) -> None:

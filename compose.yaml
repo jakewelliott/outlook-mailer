@@ -6,6 +6,9 @@ services:
     image: ghcr.io/jakewelliott/outlook-mailer:latest
     container_name: outlook-mailer
     restart: unless-stopped
+    # Time to finish an email in flight on `docker compose down`/restart before the container is
+    # killed: Graph request timeout < SHUTDOWN_GRACE_SECONDS (15 s) < this. Docker's default is 10 s.
+    stop_grace_period: 30s
     ports:
       - "8765:8765"
     volumes:

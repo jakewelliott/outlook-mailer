@@ -149,4 +149,17 @@
     src="/send/{{ draft_id }}/preview.txt?{{ query }}"></iframe>
   {% endif %}
 </section>
+
+{% if campaign_id %}
+<section class="card" id="start">
+  <h2>Send</h2>
+  <p>This list has been used for <a href="/campaigns/{{ campaign_id }}">send #{{ campaign_id }}</a>.</p>
+</section>
+{% elif saved is not none and not preview_errors and not size.too_large %}
+<section class="card" id="start">
+  <h2>Send</h2>
+  <p>When the preview looks right, check the details and start the send. It sends the version saved above.</p>
+  <p><a class="button" href="/send/{{ draft_id }}/start" id="start-link">Start sending</a></p>
+</section>
+{% endif %}
 {% endblock %}

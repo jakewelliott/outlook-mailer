@@ -20,7 +20,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from app import compose, merge, render
+from app import campaigns, compose, merge, render
 from app.compose import DraftContent
 from app.config import Settings
 from app.db import Database
@@ -137,6 +137,7 @@ def _page(
             "sample_email": SAMPLE_VALUES["email"],
             "query": query,
             "just_saved": just_saved,
+            "campaign_id": campaigns.campaign_for_draft(_db(request), draft_id),
             "default_reason": render.DEFAULT_REASON.format(
                 name=form.business_name.strip() or "your business"
             ),

@@ -107,3 +107,14 @@ h3 { font-family: Georgia, "Times New Roman", serif; color: var(--pine); font-si
 .preview-frame { display: block; width: 100%; height: 900px; resize: vertical; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
 .preview-frame.text { height: 420px; }
 [hidden] { display: none !important; }
+
+/* Sends (progress page) */
+progress { width: 100%; max-width: 420px; height: 1.1rem; vertical-align: middle; accent-color: var(--pine); margin-right: 0.5rem; }
+table.counts { max-width: 420px; }
+button.danger { background: var(--red); }
+button.danger:hover { background: var(--red-dark); }
+details summary { cursor: pointer; color: var(--red); font-weight: 600; margin-top: 0.75rem; }
+.inline-form form { margin: 0; }
+ol.events { padding-left: 1.2rem; margin: 0; }
+ol.events li { margin-bottom: 0.3rem; }
+.status-line { font-size: 1.1rem; }

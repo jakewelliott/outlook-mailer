@@ -1,11 +1,31 @@
 """The transport interface the send engine (stage 10) uses.
 
 Failures are results, not exceptions: ``send`` returns a ``SendResult`` saying what happened and
-what the engine should do next (retry after a pause, give up on this recipient, or stop the
-campaign because the sign-in is gone). That keeps retry and stop decisions in one place, the
-engine, and lets the mock script every outcome. ``send`` only raises for a bug or a message that
-breaks the rules (``app.message.MessageError``, e.g. not addressed to ``recipient``); the engine
-should treat any exception as a failed attempt for that recipient, not crash the worker.
+what the engine should do next (wait and retry, give up on this recipient, report that nobody
+knows whether it went out, or stop the campaign because the sign-in is gone). That keeps retry
+and stop decisions in one place, the engine, and lets the mock script every outcome. ``send``
+only raises for a bug or a message that breaks the rules (``app.message.MessageError``, e.g. not
+addressed to ``recipient``, checked before anything is sent). The engine treats a
+``MessageError`` as permanent and **any other exception as outcome unknown** (it may have been
+raised after the request went out), never as retryable.
+
+How the Graph transport (stage 12) must map what happens to a result. The rule: retry only when
+the message certainly wasn't accepted; when in doubt, ``unknown`` (a double email can't be taken
+back, a missing one can be sent by hand after checking Sent Items).
+
+- ``success``: 202 Accepted.
+- ``retry``: the connection couldn't be made or timed out *before the request was sent*
+  (DNS, connect error, connect/pool timeout); 429 or 503, with ``retry_after`` from the
+  ``Retry-After`` header when there is one (seconds, or an HTTP date converted to seconds).
+- ``unknown``: read or write timeout once sending has started, the connection dropped before
+  the whole response arrived, 500/502/504 (and any other 5xx) without a clear statement that
+  the request was not processed.
+- ``auth``: 401, or the token can't be refreshed (``invalid_grant``, no account in the cache).
+- ``permanent``: any other 4xx (the message itself was refused), e.g. 400 or 413.
+
+The Graph request timeout must stay below ``app.sender.SHUTDOWN_GRACE_SECONDS`` (15 s), which is
+below the container's stop grace period (30 s), so a send in flight at shutdown finishes and is
+recorded.
 """
 
 from abc import ABC, abstractmethod
@@ -17,11 +37,17 @@ class SendResult:
     """The outcome of one attempt to send one message.
 
     - ``ok``: accepted (Graph answers 202; the mock wrote the file). ``provider_id`` may say where.
-    - ``retryable``: worth trying again later, after ``retry_after`` seconds if the provider said
-      (``Retry-After``), else the engine's own backoff. Throttling, timeouts, 5xx.
+    - ``retryable``: certainly not sent and worth trying again later. With ``retry_after`` (the
+      provider's ``Retry-After``, in seconds) it means *throttled*: the engine sends nothing to
+      anyone before then. Without it the engine uses its own backoff for this recipient.
+    - ``outcome_unknown`` (``SendResult.unknown``): it may or may not have been sent (e.g. a
+      timeout after the request went out). Never retried; the recipient is reported failed with
+      "check Sent Items", and the send still counts against the daily cap.
     - ``auth_error``: the sign-in is missing, expired or revoked. Not retryable: the engine stops
       the campaign until Jake signs in again.
     - otherwise a permanent failure for this recipient (e.g. Graph rejects the message).
+
+    At most one of ``retryable``, ``outcome_unknown`` and ``auth_error`` is set on a failure.
     """
 
     ok: bool
@@ -30,16 +56,24 @@ class SendResult:
     error: str | None = None
     provider_id: str | None = None
     auth_error: bool = False
+    outcome_unknown: bool = False
 
     def __post_init__(self) -> None:
-        if self.ok and (self.retryable or self.auth_error or self.error is not None):
+        if self.ok and (
+            self.retryable or self.auth_error or self.outcome_unknown or self.error is not None
+        ):
             raise ValueError("a successful result can't carry an error")
         if not self.ok and not self.error:
             raise ValueError("a failed result needs an error message")
-        if self.auth_error and self.retryable:
-            raise ValueError("an auth error is not retryable (it stops the campaign)")
+        if sum((self.retryable, self.auth_error, self.outcome_unknown)) > 1:
+            raise ValueError("a result is at most one of retryable, unknown and auth error")
         if self.retry_after is not None and (not self.retryable or self.retry_after < 0):
             raise ValueError("retry_after is a non-negative delay for retryable failures only")
+
+    @property
+    def throttled(self) -> bool:
+        """The provider asked us to wait (``Retry-After``)."""
+        return self.retryable and self.retry_after is not None
 
     @classmethod
     def success(cls, provider_id: str | None = None) -> "SendResult":
@@ -48,6 +82,10 @@ class SendResult:
     @classmethod
     def retry(cls, error: str, retry_after: float | None = None) -> "SendResult":
         return cls(ok=False, retryable=True, retry_after=retry_after, error=error)
+
+    @classmethod
+    def unknown(cls, error: str) -> "SendResult":
+        return cls(ok=False, outcome_unknown=True, error=error)
 
     @classmethod
     def permanent(cls, error: str) -> "SendResult":

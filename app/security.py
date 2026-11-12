@@ -136,7 +136,11 @@ class RequestGuard:
         if settings.auth_disabled:
             self.verifier = None
         else:
-            assert settings.cf_access_team_domain and settings.cf_access_aud
+            if not (settings.cf_access_team_domain and settings.cf_access_aud):
+                # load_settings already requires both; this guards hand-built Settings.
+                raise ValueError(
+                    "CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required unless AUTH_DISABLED=1"
+                )
             self.verifier = verifier or AccessVerifier(
                 settings.cf_access_team_domain, settings.cf_access_aud
             )
