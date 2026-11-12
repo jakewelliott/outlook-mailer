@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -9,9 +10,10 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from app import ui
+from app import drafts, ui
 from app.config import Settings, load_settings
 from app.main import create_app
+from app.security import CSP, CSRF_HEADER
 from app.ui_send import UploadTooLarge, limit_upload_size
 
 BASE = "https://mail.example.com"
@@ -375,3 +377,110 @@ def test_pages_are_rendered_off_the_event_loop(
     assert post_mapping(client, draft, {"email": "", "status_shown": ""}).status_code == 400
     assert post_mapping(client, "0" * 32, fields).status_code == 404
     assert not on_loop
+
+
+def cut_off_post(
+    client: TestClient, path: str, content_type: str, chunks: list[bytes], csrf: str | None = None
+) -> list[dict[str, object]]:
+    """POST through the full app (guard included) with a client that disconnects after
+    ``chunks``, well before the ``Content-Length`` it announced. Returns the ASGI messages sent."""
+    incoming: list[dict[str, object]] = [
+        {"type": "http.request", "body": c, "more_body": True} for c in chunks
+    ]
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        return incoming.pop(0) if incoming else {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    cookie = "; ".join(f"{k}={v}" for k, v in client.cookies.items())
+    headers = [
+        (b"host", b"mail.example.com"),
+        (b"origin", BASE.encode()),
+        (b"cookie", cookie.encode()),
+        (b"content-type", content_type.encode()),
+        (b"content-length", b"100000"),
+    ]
+    if csrf is not None:
+        headers.append((CSRF_HEADER.encode(), csrf.encode()))
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "server": ("mail.example.com", 443),
+        "client": ("203.0.113.7", 1234),
+        "headers": headers,
+    }
+    client.portal.call(client.app, scope, receive, send)  # type: ignore[union-attr]
+    return sent
+
+
+def assert_quiet_400(sent: list[dict[str, object]], caplog: pytest.LogCaptureFixture) -> None:
+    """An empty 400 with the admin security headers, and nothing logged above debug."""
+    start, body = sent[0], sent[1]
+    assert start["type"] == "http.response.start" and start["status"] == 400
+    headers = {k.decode(): v.decode() for k, v in start["headers"]}  # type: ignore[union-attr]
+    assert headers["content-security-policy"] == CSP
+    assert headers["cache-control"] == "no-store" and headers["x-frame-options"] == "DENY"
+    assert body["type"] == "http.response.body" and body.get("body", b"") == b""
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "Traceback" not in caplog.text and "ada@example.com" not in caplog.text
+
+
+@pytest.mark.parametrize("in_header", [False, True])
+def test_cut_off_upload_is_quiet_and_leaves_nothing(
+    client: TestClient, data_dir: Path, caplog: pytest.LogCaptureFixture, in_header: bool
+) -> None:
+    """A CSV upload cut off mid-file: no file in uploads/, no draft, no ERROR log. With the token
+    in the form, ``csrf_protect`` is the reader that sees the disconnect; with it in the header,
+    the route's own form read is."""
+    caplog.set_level(logging.DEBUG)
+    csrf = token(client)
+    boundary = "b0undary"
+    head = f"--{boundary}\r\n"
+    if not in_header:
+        head += (
+            f'Content-Disposition: form-data; name="csrf_token"\r\n\r\n{csrf}\r\n--{boundary}\r\n'
+        )
+    head += (
+        'Content-Disposition: form-data; name="csv_file"; filename="list.csv"\r\n'
+        "Content-Type: text/csv\r\n\r\n"
+    )
+    chunks = [head.encode(), b"email,first\nada@example.com,Ada\n", b"bob@exa"]
+    sent = cut_off_post(
+        client,
+        "/send/new",
+        f"multipart/form-data; boundary={boundary}",
+        chunks,
+        csrf if in_header else None,
+    )
+    assert_quiet_400(sent, caplog)
+    folder = drafts.uploads_dir(data_dir)
+    assert not folder.exists() or not list(folder.iterdir())
+    with client.app.state.db.connect() as conn:  # type: ignore[union-attr]
+        assert conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 0
+    assert upload_ok(client)  # and the next, complete upload works as before
+
+
+def test_cut_off_admin_form_is_quiet_and_saves_nothing(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An ordinary admin form POST (the mapping) cut off mid-body, read by ``csrf_protect``."""
+    draft = upload_ok(client)
+    caplog.set_level(logging.DEBUG)
+    body = f"csrf_token={token(client)}&email=Email+Address&first_na".encode()
+    sent = cut_off_post(
+        client, f"/send/{draft}/mapping", "application/x-www-form-urlencoded", [body]
+    )
+    assert_quiet_400(sent, caplog)
+    db = client.app.state.db  # type: ignore[union-attr]
+    loaded = drafts.get_draft(db, draft)
+    assert loaded is not None and loaded.mapping is None

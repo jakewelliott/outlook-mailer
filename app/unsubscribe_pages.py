@@ -78,6 +78,7 @@ from starlette.requests import ClientDisconnect
 from app.campaigns import local_zone
 from app.public_style import PAGE_CSS
 from app.ratelimit import CF_CONNECTING_IP, RateLimiter, client_key
+from app.security import DISCONNECTED_STATUS
 from app.unsubscribe_tokens import (
     MAX_EMAIL_BYTES,
     ONE_CLICK_SUFFIX,
@@ -108,9 +109,6 @@ MAX_TYPED_BYTES = MAX_EMAIL_BYTES
 # The form's body (one short field, url-encoded or multipart): anything bigger is a mismatch,
 # refused from its Content-Length or as soon as the streamed body passes the limit.
 MAX_FORM_BYTES = 4096
-# A form POST whose client disconnects mid-body: an empty response the client never sees. 400,
-# not 500: nothing failed on this side (and a 500 would log a traceback for every dropped body).
-DISCONNECTED_STATUS = 400
 _DIGITS_RE = re.compile(r"\d+", re.ASCII)
 
 _env = Environment(
