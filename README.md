@@ -694,17 +694,14 @@ The tests (about 1,050) run in a throwaway Python container, so nothing needs to
 repository root (takes about 5 minutes):
 
 ```sh
-docker run --rm -v "$PWD":/src -w /src python:3.12-slim \
-  sh -c "pip install -q --root-user-action=ignore -e '.[dev]' && ruff check . && ruff format --check . && pytest -q"
+docker run --rm -v "$PWD":/src:ro python:3.12-slim sh -c "cp -r /src /work && useradd -m t && chown -R t /work \
+  && pip install -q --root-user-action=ignore -e '/work[dev]' \
+  && su t -c 'cd /work && ruff check . && ruff format --check . && pytest -q -p no:cacheprovider'"
 ```
 
-The container runs as root, so it leaves root-owned caches in the working tree (all gitignored). Remove them
-afterwards, from the repository root:
-
-```sh
-rm -rf .pytest_cache .ruff_cache *.egg-info
-find . -path ./.git -prune -o -type d -name __pycache__ -prune -exec rm -rf {} +
-```
+The tests run as a normal user, like GitHub Actions does: as root, a test that writes somewhere only root can (such
+as the default `DATA_DIR=/data`) passes locally and then fails in CI. The repository is mounted read-only and copied
+into the container, so nothing is left behind in the working tree.
 
 To build and run the image locally with the mock transport (writes `.eml` files instead of sending) and the
 Cloudflare Access check turned off (`compose.yaml` can't do this; it is production-only):

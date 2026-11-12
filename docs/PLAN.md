@@ -221,7 +221,8 @@ Stage 5 (`app/merge.py`) leaves three hazards for stage 6. Each needs a test.
 ## Stages
 
 Each stage: one coding agent, one reviewer, one commit to `main`. Tests run in Docker (the host has no Python):
-`docker run --rm -v "$PWD":/src -w /src python:3.12-slim sh -c "pip install -q --root-user-action=ignore -e '.[dev]' && ruff check . && ruff format --check . && pytest -q"`.
+`docker run --rm -v "$PWD":/src:ro python:3.12-slim sh -c "cp -r /src /work && useradd -m t && chown -R t /work && pip install -q --root-user-action=ignore -e '/work[dev]' && su t -c 'cd /work && ruff check . && ruff format --check . && pytest -q -p no:cacheprovider'"`
+(as a normal user, like CI; the read-only mount leaves nothing in the working tree).
 
 | # | Stage | Acceptance highlights |
 |---|---|---|

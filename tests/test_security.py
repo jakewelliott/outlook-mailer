@@ -1,6 +1,7 @@
 import re
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -422,8 +423,10 @@ def test_help_page_has_no_inline_script_or_style(settings: Settings) -> None:
     assert 'href="/static/app.css"' in html and 'src="/static/app.js"' in html
 
 
-def test_no_placeholder_pages_left(settings: Settings) -> None:
-    c = TestClient(create_app(settings))
+def test_no_placeholder_pages_left(valid_env: dict[str, str], tmp_path: Path) -> None:
+    # Some of these pages create files in DATA_DIR; the default /data is only writable as root
+    # (CI runs as a normal user).
+    c = TestClient(create_app(load_settings({**valid_env, "DATA_DIR": str(tmp_path)})))
     for path in ("/", "/send/new", "/campaigns", "/unsubscribes", "/account"):
         r = c.get(path)
         assert r.status_code == 200, path
