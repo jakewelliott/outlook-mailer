@@ -414,6 +414,7 @@ def test_help_page_lists_merge_fields_literally(settings: Settings) -> None:
         assert field in html
     for syntax in ("**bold**", "*italic*", "~~strike~~", "++underline++", "unsubscribed.txt"):
         assert syntax in html
+    assert '[shop](https://example.com "title")</code>, is ignored' in html
     assert "6 per minute" in html and "250 in any 24 hours" in html
 
 
