@@ -128,7 +128,6 @@ AUTH_STOP_MESSAGE = "Microsoft won't take mail from the Outlook account right no
 AUTH_STOP_AFTER = "Once that is fixed, resume this send."
 # A signed-out stop (``SendResult.signed_out``): the reason, then this (no AUTH_STOP_MESSAGE).
 SIGNED_OUT_AFTER = "Then resume this send."
-NOT_SIGNED_IN = NO_ACCOUNT
 
 Clock = Callable[[], datetime]
 SenderSource = Callable[[], Sender | None]
@@ -571,7 +570,7 @@ class SendWorker:
         if self.sender is not None:
             account = await asyncio.to_thread(self.sender)
             if account is None:  # signed out: stop the campaign, nothing is sent
-                result = SendResult.auth(NOT_SIGNED_IN, signed_out=True)
+                result = SendResult.auth(NO_ACCOUNT, signed_out=True)
                 await self._save(_Outcome(c, row, result, self.clock(), None))
                 return
             if c.sender_address is not None and normalise_key(account.address) != normalise_key(
@@ -808,12 +807,12 @@ class SendWorker:
                 if result.sender_changed is not None:
                     # The account was switched after the check in _attempt: not Microsoft's
                     # refusal, so the same reason as that check gives.
-                    add_event(conn, c.id, now, f"{who}: not sent: {error}")
+                    add_event(conn, c.id, now, f"{who}: not sent. {error}")
                     reason = campaigns.sender_changed_message(*result.sender_changed)
                 elif result.signed_out:
                     # Nothing is connected (or the saved sign-in can't be used): not
                     # Microsoft's refusal either (fix C3).
-                    add_event(conn, c.id, now, f"{who}: not sent: {error}")
+                    add_event(conn, c.id, now, f"{who}: not sent. {error}")
                     reason = f"{error} {SIGNED_OUT_AFTER}"
                 else:
                     add_event(conn, c.id, now, f"{who}: not sent, sign-in problem: {error}")
