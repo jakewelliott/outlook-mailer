@@ -308,6 +308,56 @@ def test_form_body_is_not_buffered_past_the_limit() -> None:
         assert _limited_body([(b"content-length", length)]) == (None, 0)
 
 
+@pytest.mark.parametrize("chunks", [[], [b"email=ada%40exa"]])
+def test_client_disconnect_mid_body_is_quiet(
+    client: TestClient, tmp_path: Path, caplog: pytest.LogCaptureFixture, chunks: list[bytes]
+) -> None:
+    """The client drops the connection mid-body: no exception, nothing recorded, no ERROR log, an
+    empty 400 with the strict /u/ headers (the full app, so the guard is included)."""
+    caplog.set_level(logging.DEBUG)
+    incoming = [{"type": "http.request", "body": c, "more_body": True} for c in chunks]
+    incoming.append({"type": "http.disconnect"})
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        return incoming.pop(0) if incoming else {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    path = urlsplit(path_for(ADA)).path
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "server": ("testserver", 80),
+        "client": ("203.0.113.7", 1234),
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"application/x-www-form-urlencoded"),
+            (b"content-length", b"22"),
+            (b"cf-connecting-ip", b"203.0.113.7"),
+        ],
+    }
+    client.portal.call(client.app, scope, receive, send)  # type: ignore[union-attr]
+    start, body = sent[0], sent[1]
+    assert start["type"] == "http.response.start" and start["status"] == 400
+    headers = {k.decode(): v.decode() for k, v in start["headers"]}  # type: ignore[union-attr]
+    assert headers["content-security-policy"] == UNSUBSCRIBE_CSP
+    assert headers["cache-control"] == "no-store" and headers["x-frame-options"] == "DENY"
+    assert body["type"] == "http.response.body" and body.get("body", b"") == b""
+    assert file_text(tmp_path) is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert ADA not in caplog.text and "Traceback" not in caplog.text
+    assert client.post(path_for(ADA), **typed(ADA)).status_code == 200  # still works afterwards
+
+
 def test_one_click_never_reads_the_body(client: TestClient, tmp_path: Path) -> None:
     async def receive() -> dict[str, object]:
         raise AssertionError("the one-click route read the body")
