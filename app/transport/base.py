@@ -58,6 +58,9 @@ class SendResult:
       With ``sender_changed`` (``(was, now)``, only allowed here) the reason is that the
       connected Outlook account changed from ``was`` to ``now`` since the caller checked it, so
       the engine says that instead of blaming Microsoft.
+      With ``signed_out`` (only allowed here) the reason is that no account is connected or the
+      saved sign-in can't be used (``NotSignedIn``): the engine says so, without blaming
+      Microsoft either.
     - otherwise a permanent failure for this recipient (e.g. Graph rejects the message).
 
     At most one of ``retryable``, ``outcome_unknown`` and ``auth_error`` is set on a failure.
@@ -72,6 +75,7 @@ class SendResult:
     outcome_unknown: bool = False
     stop_reason: str | None = None
     sender_changed: tuple[str, str] | None = None
+    signed_out: bool = False
 
     def __post_init__(self) -> None:
         if self.ok and (
@@ -88,6 +92,8 @@ class SendResult:
             raise ValueError("stop_reason is a non-empty reason for unknown outcomes only")
         if self.sender_changed is not None and not self.auth_error:
             raise ValueError("sender_changed is for auth errors only")
+        if self.signed_out and (not self.auth_error or self.sender_changed is not None):
+            raise ValueError("signed_out is for auth errors without sender_changed only")
 
     @property
     def throttled(self) -> bool:
@@ -111,8 +117,20 @@ class SendResult:
         return cls(ok=False, error=error)
 
     @classmethod
-    def auth(cls, error: str, sender_changed: tuple[str, str] | None = None) -> "SendResult":
-        return cls(ok=False, auth_error=True, error=error, sender_changed=sender_changed)
+    def auth(
+        cls,
+        error: str,
+        sender_changed: tuple[str, str] | None = None,
+        *,
+        signed_out: bool = False,
+    ) -> "SendResult":
+        return cls(
+            ok=False,
+            auth_error=True,
+            error=error,
+            sender_changed=sender_changed,
+            signed_out=signed_out,
+        )
 
 
 class Transport(ABC):

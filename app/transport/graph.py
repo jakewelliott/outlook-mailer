@@ -6,6 +6,7 @@ The request body is the whole MIME message base64-encoded (``message.graph_paylo
 With ``expected_sender`` (the From the caller checked) it only hands out a token while that
 address is still the connected account; otherwise (``AccountChanged``) nothing is sent and the
 result is an auth error with ``sender_changed`` set, so the engine names the account change.
+``NotSignedIn`` (nothing connected, or a saved sign-in that can't be used) sets ``signed_out``.
 
 How each outcome maps to a ``SendResult`` (the policy is in ``app.transport.base``; the reasons
 for the account-level codes are in docs/DECISIONS.md "Graph responses"):
@@ -62,7 +63,13 @@ from typing import Any
 import httpx
 
 from app.message import check_single_recipient, graph_payload
-from app.msauth import AccountChanged, AuthError, MicrosoftAuth, TokenUnavailable
+from app.msauth import (
+    AccountChanged,
+    AuthError,
+    MicrosoftAuth,
+    NotSignedIn,
+    TokenUnavailable,
+)
 from app.transport.base import SendResult, Transport
 
 log = logging.getLogger("outlook_mailer.graph")
@@ -228,6 +235,8 @@ class GraphTransport(Transport):
                 )
         except AccountChanged as exc:  # an AuthError: nothing sent, the engine says why
             return SendResult.auth(str(exc), sender_changed=(exc.expected, exc.connected))
+        except NotSignedIn as exc:  # nothing connected (or unusable): not Microsoft's refusal
+            return SendResult.auth(str(exc), signed_out=True)
         except AuthError as exc:
             return SendResult.auth(str(exc))
         except TokenUnavailable as exc:

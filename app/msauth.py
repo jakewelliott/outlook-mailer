@@ -96,7 +96,10 @@ class AuthError(Exception):
 
 
 class NotSignedIn(AuthError):
-    pass
+    """No account is connected, or the saved sign-in can't be used (connect again)."""
+
+
+NO_ACCOUNT = "No Outlook account is connected. Connect it on the Account page."
 
 
 class ReauthRequired(AuthError):
@@ -865,7 +868,7 @@ class MicrosoftAuth:
                 force = self._reauth
                 current = self._sender
             if not signed_in:
-                raise NotSignedIn("No Microsoft account is connected.")
+                raise NotSignedIn(NO_ACCOUNT)
             if (
                 expected_address is not None
                 and current is not None
@@ -876,7 +879,7 @@ class MicrosoftAuth:
                 app = self._app()
                 accounts = app.get_accounts()
                 if not accounts:
-                    raise NotSignedIn("No Microsoft account is connected.")
+                    raise NotSignedIn(NO_ACCOUNT)
                 assert current is not None  # signed_in
                 problem = _mismatch(accounts, current)
                 if problem is not None:
