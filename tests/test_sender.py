@@ -847,6 +847,179 @@ def test_unsaved_outcome_is_given_up_after_n_tries(
     assert env.status(cid) == campaigns.FINISHED
 
 
+# Fix A3: an outcome written again (its write committed, then an error was raised) is a no-op.
+REAPPLY_RESULTS = {
+    "sent": SendResult.success(),
+    "retry": SendResult.retry("timeout"),
+    "throttled": SendResult.retry("429", retry_after=300),
+    "permanent": SendResult.permanent("bad"),
+    "unknown": SendResult.unknown("timeout"),
+    "unknown_stop": SendResult.unknown("500", stop_reason="Account blocked."),
+    "auth": SendResult.auth("revoked"),
+}
+PRE_SEND = {"build_retry", "build_message_error", "signed_out"}
+REAPPLY_KINDS = [*REAPPLY_RESULTS, *sorted(PRE_SEND)]
+
+
+def reapply_env(tmp_path: Path, kind: str) -> Env:
+    """Ada's first attempt has the ``kind`` outcome; everyone else (and ada later) succeeds."""
+    result = REAPPLY_RESULTS.get(kind)
+
+    def decide(r: str, n: int) -> SendResult | None:
+        return result if r == "ada@example.com" and n == 1 else None
+
+    env = Env(tmp_path, rate=60, decide=decide)
+    if kind in ("build_retry", "build_message_error"):
+        real_build = env.worker._build
+        exc = RuntimeError("template broke") if kind == "build_retry" else MessageError("bad")
+        built = {"ada": 0}
+
+        def build(c: object, row: sender._Row, account: object) -> bytes:
+            if row.email == "ada@example.com" and not built["ada"]:
+                built["ada"] += 1
+                raise exc
+            return real_build(c, row, account)  # type: ignore[arg-type]
+
+        env.worker._build = build  # type: ignore[method-assign]
+    elif kind == "signed_out":
+        env.worker.sender = lambda: None
+    return env
+
+
+def commit_then_raise(env: Env, times: int) -> dict[str, int]:
+    """The first ``times`` writes of an outcome commit and *then* raise (e.g. closing the
+    connection failed), so the worker believes they failed and writes them again."""
+    record = env.worker._record
+    calls = {"n": 0}
+
+    def record_then_fail(*args: object, **kwargs: object) -> None:
+        calls["n"] += 1
+        record(*args, **kwargs)  # type: ignore[arg-type]
+        if calls["n"] <= times:
+            raise sqlite3.OperationalError("disk I/O error")
+
+    env.worker._record = record_then_fail  # type: ignore[method-assign]
+    return calls
+
+
+def snapshot(env: Env) -> dict[str, list[tuple[object, ...]]]:
+    """Everything an outcome can change: the campaign's counters, the recipients, the send
+    log (the daily cap and pacing), the throttle and the events."""
+    queries = {
+        "campaigns": "SELECT * FROM campaigns ORDER BY id",  # draft_id dropped below
+        "recipients": "SELECT * FROM campaign_recipients ORDER BY campaign_id, row_no",
+        "send_log": "SELECT * FROM send_log ORDER BY id",
+        "throttle": "SELECT * FROM send_throttle",
+        "events": "SELECT campaign_id, at, message FROM campaign_events ORDER BY id",
+    }
+    with env.db.connect() as conn:
+        return {
+            k: [tuple(v for c, v in zip(r.keys(), r, strict=True) if c != "draft_id") for r in rows]
+            for k, rows in ((k, conn.execute(q).fetchall()) for k, q in queries.items())
+        }
+
+
+@pytest.mark.parametrize("kind", REAPPLY_KINDS)
+def test_outcome_rewritten_by_the_save_retry_counts_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """``_save``'s retry writes an outcome again after a write that committed but raised: same
+    database as a single write (one event, one failure or throttle counted, one stop)."""
+    monkeypatch.setattr(sender, "RECORD_RETRY_SECONDS", (0.0,))
+    once = reapply_env(tmp_path / "once", kind)
+    once.campaign(EMAILS)
+    once.step()
+    twice = reapply_env(tmp_path / "twice", kind)
+    twice.campaign(EMAILS)
+    calls = commit_then_raise(twice, times=1)
+    twice.step()
+    assert calls["n"] == 2  # written, then written again
+    assert snapshot(twice) == snapshot(once)
+
+
+@pytest.mark.parametrize("kind", REAPPLY_KINDS)
+def test_outcome_replayed_by_the_next_step_counts_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """The outcome held in memory (every try in ``_save`` committed but raised) is replayed by
+    the next step: no second event or count. Later, genuinely new attempts record normally."""
+    monkeypatch.setattr(sender, "RECORD_RETRY_SECONDS", ())  # one try in _save
+    once = reapply_env(tmp_path / "once", kind)
+    cid = once.campaign(EMAILS)
+    once.step()
+    once.step()
+    twice = reapply_env(tmp_path / "twice", kind)
+    twice.campaign(EMAILS)
+    calls = commit_then_raise(twice, times=1)
+    with pytest.raises(sqlite3.OperationalError):
+        twice.step()
+    assert twice.worker._unrecorded is not None
+    twice.step()  # the replay, then the plan
+    assert calls["n"] >= 2 and twice.worker._unrecorded is None  # replayed (then maybe bob)
+    assert snapshot(twice) == snapshot(once)
+
+    for env in (once, twice):
+        if env.status(cid) == campaigns.STOPPED_ERROR:
+            if kind == "signed_out":
+                env.worker.sender = None
+            campaigns.resume(env.db, cid, env.clock(), transport="mock")
+        env.drive()
+    assert snapshot(twice) == snapshot(once)
+    assert once.status(cid) == campaigns.FINISHED
+    ada = once.recipients(cid)["ada@example.com"]
+    if kind in ("retry", "build_retry"):  # retried: both attempts counted, sent the second time
+        assert (ada["status"], ada["attempts"]) == (campaigns.R_SENT, 2)
+
+
+def test_replayed_auth_outcome_does_not_stop_a_resumed_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The auth outcome stopped the campaign (committed, then the error), Jake resumed it
+    during the worker's error pause, and then the outcome is replayed: it must not stop the
+    campaign again nor add events."""
+    monkeypatch.setattr(sender, "RECORD_RETRY_SECONDS", ())
+    env = reapply_env(tmp_path, "auth")
+    cid = env.campaign(EMAILS)
+    commit_then_raise(env, times=1)
+    with pytest.raises(sqlite3.OperationalError):
+        env.step()
+    assert env.status(cid) == campaigns.STOPPED_ERROR
+    campaigns.resume(env.db, cid, env.clock(), transport="mock")
+    stops = [e for e in env.events(cid) if e.startswith("Stopped")]
+    env.drive()
+    assert env.status(cid) == campaigns.FINISHED
+    assert [e for e in env.events(cid) if e.startswith("Stopped")] == stops
+    assert {r["status"] for r in env.recipients(cid).values()} == {campaigns.R_SENT}
+
+
+def test_outcome_whose_write_rolled_back_is_written_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordinary case the guard must not block: the write fails before committing, so the
+    replay is the one that records it."""
+    monkeypatch.setattr(sender, "RECORD_RETRY_SECONDS", ())
+    once = reapply_env(tmp_path / "once", "retry")
+    once.campaign(EMAILS)
+    once.step()
+    once.step()
+    twice = reapply_env(tmp_path / "twice", "retry")
+    twice.campaign(EMAILS)
+    record = twice.worker._record
+    calls = {"n": 0}
+
+    def fail_then_record(*args: object, **kwargs: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        record(*args, **kwargs)  # type: ignore[arg-type]
+
+    twice.worker._record = fail_then_record  # type: ignore[method-assign]
+    with pytest.raises(sqlite3.OperationalError):
+        twice.step()
+    twice.step()
+    assert snapshot(twice) == snapshot(once)
+
+
 # --- shutdown ----------------------------------------------------------------------------------
 
 
