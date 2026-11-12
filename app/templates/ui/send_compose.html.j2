@@ -27,6 +27,7 @@
 {% elif just_saved %}
 <p class="ok" role="status">Saved. The preview below shows this version.</p>
 {% endif %}
+{% if test_error %}<div class="error" role="alert" id="test-error"><p>Test not sent: {{ test_error }}</p></div>{% endif %}
 
 <form method="post" action="/send/{{ draft_id }}/compose" id="compose-form">
   {{ csrf_field(request) }}
@@ -150,6 +151,46 @@
   {% endif %}
 </section>
 
+{% if saved is not none and not preview_errors and not size.too_large %}
+<section class="card" id="test-send">
+  <h2>Send a test to yourself</h2>
+  {% if test_result %}
+    {% if test_result.ok %}
+  <p class="ok" role="status" id="test-result">Test sent to {{ test_result.to_addr }} at {{ test_result_at }}.{% if mock %} (Mock mode: it is in the outbox folder, not emailed.){% else %} Check your inbox (and the junk folder).{% endif %}</p>
+    {% elif test_result.ok is none %}
+  <p class="warn-box" role="alert" id="test-result">The test send to {{ test_result.to_addr }} at {{ test_result_at }} didn't finish.</p>
+    {% elif test_result.outcome_unknown %}
+  <p class="warn-box" role="alert" id="test-result">Not sure whether the test to {{ test_result.to_addr }} at {{ test_result_at }} went out ({{ test_result.error }}). Check your inbox and Sent Items. It doesn't unlock sending to the list: send another test.</p>
+    {% else %}
+  <div class="error" role="alert" id="test-result"><p>The test wasn't sent: {{ test_result.error }}</p></div>
+    {% endif %}
+  {% endif %}
+  <p class="{{ 'ok' if test_status.ok else 'warn-box' }}" id="test-status">{{ test_status.message }}</p>
+  {% if test_to %}
+  <p>Sends the saved version once to <strong id="test-to">{{ test_to }}</strong>{% if mock %} (mock mode: written to the outbox){% endif %}, with
+    “{{ test_prefix }}” before the subject. The merge fields are filled in for the recipient chosen in the
+    preview above; the unsubscribe link in the test is for your own address. Sending to the list stays locked
+    until a test of the current version has gone out, and every edit needs a new test.</p>
+  <form method="post" action="/send/{{ draft_id }}/test-send" class="inline-form">
+    {{ csrf_field(request) }}
+    <input type="hidden" name="scheme" value="{{ scheme }}">
+    <label for="test-r">Merge fields from</label>
+    <select id="test-r" name="r">
+    {% for p in choices %}
+      <option value="{{ loop.index0 }}"{% if choice == loop.index0 | string %} selected{% endif %}>Row {{ p.row }}: {{ p.first_name or "(no first name)" }}</option>
+    {% endfor %}
+      <option value="{{ sample }}"{% if choice == sample %} selected{% endif %}>Sample: no first name (shows fallbacks)</option>
+    </select>
+    <button type="submit" id="send-test">Send test to me</button>
+  </form>
+  <p class="muted">At most one test every {{ test_interval }} seconds and {{ test_per_day }} per 24 hours. Tests count
+    toward the daily limit, since they use the same Outlook account.</p>
+  {% else %}
+  <p><a href="/account">Connect your Outlook account</a> to send a test to it.</p>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if campaign_id %}
 <section class="card" id="start">
   <h2>Send</h2>
@@ -158,7 +199,8 @@
 {% elif saved is not none and not preview_errors and not size.too_large %}
 <section class="card" id="start">
   <h2>Send</h2>
-  <p>When the preview looks right, check the details and start the send. It sends the version saved above.</p>
+  <p>When the preview and your test look right, check the details and start the send. It sends the version saved
+    above.{% if not test_status.ok %} <strong>Send a test of this version first</strong> (above).{% endif %}</p>
   <p><a class="button" href="/send/{{ draft_id }}/start" id="start-link">Start sending</a></p>
 </section>
 {% endif %}

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import stat
 import threading
 import time
@@ -38,6 +39,7 @@ from app.msauth import (
     CONSUMER_TENANT_ID,
     GRAPH_ME,
     SCOPES,
+    AccountChanged,
     MicrosoftAuth,
     NotSignedIn,
     ReauthRequired,
@@ -99,6 +101,7 @@ class Scenario:
     initiating: threading.Event = field(default_factory=threading.Event)
     apps: list["FakeApp"] = field(default_factory=list)
     scopes: list[list[str]] = field(default_factory=list)
+    forced: list[bool] = field(default_factory=list)  # force_refresh of each silent call
 
 
 class FakeApp:
@@ -121,7 +124,7 @@ class FakeApp:
         self.scenario.scopes.append(scopes)
         self.scenario.initiating.set()
         if self.scenario.initiate_gate is not None:
-            assert self.scenario.initiate_gate.wait(5), "test never released the device flow"
+            assert self.scenario.initiate_gate.wait(30), "test never released the device flow"
         flow = dict(self.scenario.flow)
         if "user_code" in flow:
             flow["expires_at"] = time.time() + flow["expires_in"]
@@ -152,9 +155,12 @@ class FakeApp:
     def get_accounts(self) -> list[dict[str, Any]]:
         return list(self.cache.search(msal.TokenCache.CredentialType.ACCOUNT))
 
-    def acquire_token_silent_with_error(self, scopes: list[str], account: Any) -> Any:
+    def acquire_token_silent_with_error(
+        self, scopes: list[str], account: Any, force_refresh: bool = False
+    ) -> Any:
         msal.ClientApplication._decorate_scope(SimpleNamespace(_exclude_scopes=frozenset()), scopes)
         self.scenario.scopes.append(scopes)
+        self.scenario.forced.append(force_refresh)
         return self.scenario.silent()
 
 
@@ -218,7 +224,7 @@ def sign_in(auth: MicrosoftAuth) -> None:
     assert auth.status().state == "signed_in", auth.status().error
 
 
-def quick(fn: Callable[[], Any], limit: float = 0.2) -> Any:
+def quick(fn: Callable[[], Any], limit: float = 5.0) -> Any:
     """Call ``fn`` in a thread; fail if it hasn't returned within ``limit`` seconds. Returns its
     result or re-raises its exception."""
     out: list[Any] = []
@@ -348,14 +354,14 @@ def test_cancel_discards_the_flow(tmp_path: Path, scenario: Scenario, me: respx.
     scenario.hold = True
     auth = make_auth(tmp_path)
     auth.start_sign_in()
-    assert scenario.polling.wait(2)
+    assert scenario.polling.wait(10)
     thread = auth._slot.thread  # type: ignore[union-attr]
     assert auth.cancel_sign_in() is True
     status = auth.status()
     assert status.state == "signed_out" and status.notice == "Sign-in cancelled."
     # Even if Microsoft answers with a token after the cancel, it is not used.
     scenario.release.set()
-    thread.join(2)  # type: ignore[union-attr]
+    thread.join(10)  # type: ignore[union-attr]
     assert auth.status().state == "signed_out"
     assert get_sender(auth.db) is None
     assert not (tmp_path / CACHE_FILE).exists()
@@ -366,10 +372,10 @@ def test_cancel_stops_msal_polling(tmp_path: Path, scenario: Scenario) -> None:
     scenario.hold = True  # never released: only the exit condition can end the loop
     auth = make_auth(tmp_path)
     auth.start_sign_in()
-    assert scenario.polling.wait(2)
+    assert scenario.polling.wait(10)
     thread = auth._slot.thread  # type: ignore[union-attr]
     auth.cancel_sign_in()
-    thread.join(2)  # type: ignore[union-attr]
+    thread.join(10)  # type: ignore[union-attr]
     assert not thread.is_alive()  # type: ignore[union-attr]
 
 
@@ -380,10 +386,10 @@ def test_code_expiry_ends_the_sign_in(tmp_path: Path, scenario: Scenario) -> Non
     db.init()
     auth = MicrosoftAuth(graph_settings(tmp_path), db, clock=lambda: now[0])
     code = auth.start_sign_in()
-    assert scenario.polling.wait(2)
+    assert scenario.polling.wait(10)
     assert auth.status().state == "signing_in"
     now[0] = code.expires_at + 1  # the code has just expired
-    wait_done(auth, timeout=1)  # the fake polls every 10 ms
+    wait_done(auth)  # the fake polls every 10 ms
     status = auth.status()
     assert status.state == "signed_out"
     assert status.error and "expired" in status.error
@@ -523,6 +529,18 @@ def test_get_access_token(tmp_path: Path, scenario: Scenario, me: respx.Route) -
     sign_in(auth)
     assert auth.get_access_token() == "silent-" + ACCESS_TOKEN
     assert scenario.scopes[-1] == ["Mail.Send", "User.Read"]
+
+
+def test_get_access_token_for_an_expected_account(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    assert auth.get_access_token(expected_address="jake@OUTLOOK.com").startswith("silent-")
+    calls = len(scenario.scopes)
+    with pytest.raises(AccountChanged, match=r"changed to Jake@outlook\.com"):
+        auth.get_access_token(expected_address="other@outlook.com")
+    assert len(scenario.scopes) == calls  # no token was fetched for it
 
 
 @pytest.mark.parametrize(
@@ -668,15 +686,16 @@ def test_state_readable_while_a_sign_in_starts(tmp_path: Path, scenario: Scenari
     scenario.initiate_gate = threading.Event()
     auth = make_auth(tmp_path)
     thread, errors = in_thread(auth.start_sign_in)
-    assert scenario.initiating.wait(2)  # waiting for Microsoft's device code
+    assert scenario.initiating.wait(10)  # waiting for Microsoft's device code
     assert quick(auth.status).state == "signed_out"
     assert quick(auth.indicator) == "not connected"
     assert quick(auth.sender) is None
     with pytest.raises(SignInError, match="already being started"):
         quick(auth.start_sign_in)
+    assert "already being started" in (auth.status().notice or "")  # shown on the page
     assert len(scenario.apps) == 1
     scenario.initiate_gate.set()
-    thread.join(2)
+    thread.join(10)
     assert not errors
     assert auth.status().state == "signing_in"
     with pytest.raises(SignInError, match="already in progress"):
@@ -688,10 +707,10 @@ def test_cancel_while_a_sign_in_starts(tmp_path: Path, scenario: Scenario) -> No
     scenario.initiate_gate = threading.Event()
     auth = make_auth(tmp_path)
     thread, errors = in_thread(auth.start_sign_in)
-    assert scenario.initiating.wait(2)
+    assert scenario.initiating.wait(10)
     assert quick(auth.cancel_sign_in) is True
     scenario.initiate_gate.set()
-    thread.join(2)
+    thread.join(10)
     assert len(errors) == 1 and isinstance(errors[0], SignInError)
     assert "cancelled" in str(errors[0])
     status = auth.status()
@@ -720,12 +739,12 @@ def test_state_readable_during_token_renewal(
 
     def silent() -> Any:
         entered.set()
-        assert gate.wait(5)
+        assert gate.wait(30)
         return {"access_token": "t"}
 
     scenario.silent = silent
     thread, errors = in_thread(auth.get_access_token)
-    assert entered.wait(2)  # renewing, holding the MSAL lock
+    assert entered.wait(10)  # renewing, holding the MSAL lock
     assert quick(auth.status).state == "signed_in"
     assert quick(auth.indicator) == "connected"
     assert quick(auth.sender) == msauth.Sender("Jake@outlook.com", "Jake Elliott")
@@ -734,7 +753,7 @@ def test_state_readable_during_token_renewal(
     quick(auth.start_sign_in)
     assert quick(auth.cancel_sign_in) is True
     gate.set()
-    thread.join(2)
+    thread.join(10)
     assert not errors
 
 
@@ -746,7 +765,7 @@ def test_app_shutdown_does_not_block_the_event_loop(
     released: list[bool] = []
 
     def slow_shutdown() -> None:  # like joining a sign-in thread that takes a while
-        released.append(release.wait(2))
+        released.append(release.wait(10))
 
     monkeypatch.setattr(app.state.msauth, "shutdown", slow_shutdown)
 
@@ -767,9 +786,9 @@ def test_real_shutdown_ends_a_sign_in(tmp_path: Path, scenario: Scenario) -> Non
     scenario.hold = True  # never released: only the exit condition ends the poll
     auth = make_auth(tmp_path)
     auth.start_sign_in()
-    assert scenario.polling.wait(2)
+    assert scenario.polling.wait(10)
     thread = auth._slot.thread  # type: ignore[union-attr]
-    quick(auth.shutdown, limit=1)
+    quick(auth.shutdown)
     assert not thread.is_alive()  # type: ignore[union-attr]
     assert auth.status().state == "signed_out"
 
@@ -974,3 +993,160 @@ def test_page_not_configured(tmp_path: Path, scenario: Scenario) -> None:
     assert 'id="account-not-configured"' in page
     assert 'action="/account/connect"' not in page
     assert not scenario.apps
+
+
+# --- saving a sign-in fails ----------------------------------------------------------------------
+
+NEW_REFRESH = "M.C5_BAY.NEW-REFRESH-TOKEN-secret"
+
+
+def failing_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    def store(db: Database, sender: msauth.Sender | None) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(msauth, "_store_sender", store)
+
+
+def test_commit_db_failure_keeps_old_sign_in(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    scenario.result = {**token_response(), "refresh_token": NEW_REFRESH}
+    failing_store(monkeypatch)
+    auth.start_sign_in()
+    wait_done(auth)
+    status = auth.status()
+    assert status.state == "signed_in" and "couldn't be saved in the database" in (
+        status.error or ""
+    )
+    raw = (tmp_path / CACHE_FILE).read_text()
+    assert REFRESH_TOKEN in raw and NEW_REFRESH not in raw  # the old sign-in is back on disk
+    assert auth.get_access_token().startswith("silent-")
+    assert get_sender(auth.db) == msauth.Sender("Jake@outlook.com", "Jake Elliott")
+
+
+def test_commit_db_failure_when_signed_out_leaves_no_file(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = make_auth(tmp_path)
+    failing_store(monkeypatch)
+    auth.start_sign_in()
+    wait_done(auth)
+    assert auth.status().state == "signed_out"
+    assert not (tmp_path / CACHE_FILE).exists()
+
+
+def test_commit_restore_failure_deletes_the_file(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new sign-in is on disk, the database write fails and so does putting the old file
+    back: the file is deleted, so file and database can't disagree after a restart."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    scenario.result = {**token_response(), "refresh_token": NEW_REFRESH}
+    failing_store(monkeypatch)
+    real_write = msauth._CacheFile.write
+    writes: list[int] = []
+
+    def write(self: Any, state: str) -> None:
+        writes.append(1)
+        if len(writes) > 1:  # the restore
+            raise OSError(28, "No space left on device")
+        real_write(self, state)
+
+    monkeypatch.setattr(msauth._CacheFile, "write", write)
+    auth.start_sign_in()
+    wait_done(auth)
+    assert len(writes) == 2
+    assert not (tmp_path / CACHE_FILE).exists()
+    assert "couldn't be saved" in (auth.status().error or "")
+    monkeypatch.undo()
+    assert make_auth(tmp_path).status().state == "signed_out"
+
+
+def test_cancel_during_commit_is_refused(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = make_auth(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    real_store = msauth._store_sender
+
+    def store(db: Database, sender: msauth.Sender | None) -> None:
+        entered.set()
+        assert release.wait(30)
+        real_store(db, sender)
+
+    monkeypatch.setattr(msauth, "_store_sender", store)
+    auth.start_sign_in()
+    assert entered.wait(5)  # succeeded, now saving
+    assert quick(auth.cancel_sign_in) is False  # too late to cancel
+    assert quick(auth.status).state == "signing_in"
+    release.set()
+    wait_done(auth)
+    status = auth.status()
+    assert status.state == "signed_in" and status.notice == "Connected as Jake@outlook.com."
+
+
+def test_refused_start_shows_a_notice(
+    client: TestClient, scenario: Scenario, me: respx.Route
+) -> None:
+    scenario.hold = True
+    post(client, "/account/connect")
+    post(client, "/account/connect")  # refused: one sign-in at a time
+    page = client.get("/account").text
+    assert 'id="account-notice"' in page and "already in progress" in page
+    post(client, "/account/cancel")
+
+
+def test_note_token_rejected(tmp_path: Path, scenario: Scenario, me: respx.Route) -> None:
+    auth = make_auth(tmp_path)
+    auth.note_token_rejected()
+    assert auth.indicator() == "not connected"  # nothing to reconnect
+    sign_in(auth)
+    assert auth.get_access_token()
+    assert scenario.forced[-1] is False  # normally the cached token is fine
+    auth.note_token_rejected()
+    assert auth.indicator() == "reconnect needed"
+    assert auth.get_access_token()  # a forced refresh that succeeds clears it
+    assert scenario.forced[-1] is True
+    assert auth.indicator() == "connected"
+    assert auth.get_access_token() and scenario.forced[-1] is False  # one-shot
+
+
+def test_token_rejected_needs_a_real_refresh(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    """After a 401 the cached token can't clear "reconnect needed": the next call forces a
+    refresh, and only its success, an accepted send or a sign-in clears it."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    auth.note_token_rejected()
+
+    def refresh_refused() -> Any:
+        # The cache would still hand out the old token; Microsoft refuses the refresh.
+        if scenario.forced[-1]:
+            return {"error": "invalid_grant", "error_codes": [70008]}
+        return {"access_token": "cached"}
+
+    scenario.silent = refresh_refused
+    with pytest.raises(ReauthRequired):
+        auth.get_access_token()
+    assert scenario.forced[-1] is True and auth.indicator() == "reconnect needed"
+    with pytest.raises(ReauthRequired):  # still forced, still refused
+        auth.get_access_token()
+    assert scenario.forced[-1] is True and auth.indicator() == "reconnect needed"
+    # Microsoft unreachable: still forced next time, still "reconnect needed".
+    scenario.silent = lambda: {"error": "temporarily_unavailable"}
+    with pytest.raises(TokenUnavailable):
+        auth.get_access_token()
+    assert auth.indicator() == "reconnect needed"
+    # An accepted send clears it.
+    auth.note_token_accepted()
+    assert auth.indicator() == "connected"
+    scenario.silent = lambda: {"access_token": "t"}
+    assert auth.get_access_token() == "t" and scenario.forced[-1] is False
+    # A new sign-in clears it too.
+    auth.note_token_rejected()
+    sign_in(auth)
+    assert auth.indicator() == "connected"

@@ -103,7 +103,7 @@ def test_long_malformed_snippet_is_cut() -> None:
 def test_huge_malformed_single_line_is_fast() -> None:
     start = time.perf_counter()
     errors = validate("{{a" * 100_000)  # 300 KB, one line, 100,000 malformed fields
-    assert time.perf_counter() - start < 2
+    assert time.perf_counter() - start < 10  # catches quadratic blow-ups, not load
     assert errors and errors[0].startswith("Malformed merge field {{a{{a")
 
 

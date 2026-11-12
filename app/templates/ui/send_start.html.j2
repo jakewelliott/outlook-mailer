@@ -25,6 +25,7 @@
       <tr><th scope="row">Daily limit</th><td>{{ cap }} per rolling 24 hours, across all sends
         ({{ plan.used_today }} used in the last 24 hours). When it is reached the send pauses and carries on by itself.</td></tr>
       <tr><th scope="row">Estimated time</th><td id="start-estimate">{{ plan.estimate }}</td></tr>
+      {% if plan.test %}<tr><th scope="row">Test send</th><td id="start-test-status" class="{{ "ok" if plan.test.ok else "warn-box" }}">{{ plan.test.message }}{% if not plan.test.ok %} <a href="/send/{{ draft_id }}/compose#test-send">Go to the test send</a>{% endif %}</td></tr>{% endif %}
       <tr><th scope="row">Transport</th><td>{% if transport == "mock" %}mock: each message is written to the outbox folder as an <code>.eml</code> file, nothing is emailed{% else %}Microsoft Graph{% endif %}</td></tr>
     </tbody>
   </table>

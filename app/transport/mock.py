@@ -50,7 +50,9 @@ class MockTransport(Transport):
         self.written: list[Path] = []
         self._count = 0
 
-    async def send(self, mime: bytes, *, recipient: str) -> SendResult:
+    async def send(
+        self, mime: bytes, *, recipient: str, expected_sender: str | None = None
+    ) -> SendResult:
         check_single_recipient(mime, recipient)
         key = normalise_key(recipient)
         self.attempts[key] += 1

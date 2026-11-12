@@ -56,11 +56,13 @@ def create_app(
     transport: Transport | None = None,
     clock: Clock | None = None,
     run_worker: bool = True,
+    msauth: MicrosoftAuth | None = None,
 ) -> FastAPI:
     """Build the app. Settings are loaded from the environment when not given.
 
     ``verifier`` overrides the Cloudflare Access verifier, ``transport`` the one named by
-    ``MAIL_TRANSPORT``, and ``clock`` the time source of the send worker and campaign pages.
+    ``MAIL_TRANSPORT``, ``msauth`` the Microsoft sign-in, and ``clock`` the time source of the
+    send worker and campaign pages.
     With ``run_worker=False`` the send worker is built (``app.state.worker``) but not started,
     so tests can drive it with ``step``. All for tests.
 
@@ -82,13 +84,17 @@ def create_app(
 
     db = Database(Path(settings.data_dir) / "app.db")
     clock = clock or utcnow
+    msauth = msauth or MicrosoftAuth(settings, db)
     if transport is None:
-        try:
-            transport = make_transport(settings)
-        except NotImplementedError as exc:
-            log.warning("No send worker: %s", exc)
-    worker = SendWorker(db, settings, transport, clock=clock) if transport is not None else None
-    msauth = MicrosoftAuth(settings, db)
+        transport = make_transport(settings, msauth)
+    # Graph sends from the signed-in account; without one the worker stops the campaign.
+    worker = SendWorker(
+        db,
+        settings,
+        transport,
+        clock=clock,
+        sender=msauth.sender if settings.mail_transport == "graph" else None,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -104,17 +110,16 @@ def create_app(
         cleaned = campaigns.cleanup_csvs(db, settings.data_dir, now)
         if cleaned:
             log.info("Deleted %d uploaded CSV file(s) no longer needed.", cleaned)
-        if worker is not None and run_worker:
+        await transport.open()  # the shared HTTP client (graph); nothing is sent
+        if run_worker:
             worker.start()
         try:
             yield
         finally:
             # Joins the sign-in thread (up to 3 s): keep it off the event loop.
             await asyncio.to_thread(msauth.shutdown)
-            if worker is not None:
-                await worker.stop()
-            if transport is not None:
-                await transport.aclose()
+            await worker.stop()
+            await transport.aclose()
             db.close()
 
     app = FastAPI(
@@ -124,6 +129,7 @@ def create_app(
     app.state.db = db
     app.state.clock = clock
     app.state.worker = worker
+    app.state.transport = transport
     app.state.msauth = msauth
     app.state.csrf_signer = CsrfSigner(settings.unsubscribe_secret)
     app.add_middleware(RequestGuard, settings=settings, verifier=verifier)

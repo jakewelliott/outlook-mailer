@@ -121,6 +121,8 @@ class Campaign:
     next_send_at: datetime | None
     resume_at: datetime | None
     last_error: str | None
+    # graph: the Outlook address the campaign was tested with and sends as; None in mock mode
+    sender_address: str | None = None
 
     @property
     def status_label(self) -> str:
@@ -148,6 +150,7 @@ def _campaign(row: sqlite3.Row) -> Campaign:
         next_send_at=parse_iso(row["next_send_at"]),
         resume_at=parse_iso(row["resume_at"]),
         last_error=row["last_error"],
+        sender_address=row["sender_address"],
     )
 
 
@@ -198,9 +201,11 @@ def create_campaign(
     now: datetime,
     *,
     transport: str,
+    sender_address: str | None = None,
 ) -> int:
     """Snapshot ``content`` and ``recipients`` into a new queued campaign that only
-    ``transport`` (the ``MAIL_TRANSPORT`` it was started with) may send. Raises
+    ``transport`` (the ``MAIL_TRANSPORT`` it was started with) may send, as ``sender_address``
+    (graph: the tested Outlook address; the worker stops if another is connected). Raises
     ``CampaignError`` if another campaign is unfinished or this draft was already sent."""
     recipients = list(recipients)
     if not recipients:
@@ -217,8 +222,9 @@ def create_campaign(
             raise CampaignError(f"This list has already been used for send #{row['id']}.")
         cur = conn.execute(
             "INSERT INTO campaigns "
-            "(draft_id, created_at, status, transport, content, content_hash, total) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(draft_id, created_at, status, transport, content, content_hash, total, "
+            "sender_address) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 draft_id,
                 iso(now),
@@ -227,6 +233,7 @@ def create_campaign(
                 compose.to_json(content),
                 compose.content_hash(content),
                 len(recipients),
+                sender_address,
             ),
         )
         campaign_id = cur.lastrowid
@@ -375,9 +382,28 @@ def transport_mismatch(c: Campaign, transport: str) -> str | None:
     return f"This send was started in {c.transport} mode; cancel it and start a new one."
 
 
-def resume(db: Database, campaign_id: int, now: datetime, *, transport: str) -> Campaign:
+def sender_changed_message(was: str, now: str) -> str:
+    """Why a graph campaign can't go on: another Outlook account is connected than the one its
+    test went to and it was started as."""
+    return (
+        f"The connected Outlook account ({now}) isn't the one this send was tested with and "
+        f"started as ({was}). Connect {was} again and resume, or send a test of this message to "
+        f"{now} (Send test to me on the compose page) and then resume, or cancel."
+    )
+
+
+def resume(
+    db: Database,
+    campaign_id: int,
+    now: datetime,
+    *,
+    transport: str,
+    sender_address: str | None = None,
+) -> Campaign:
     """Resume a paused or stopped campaign. Refused if it was started with another transport
-    (``transport`` is the current ``MAIL_TRANSPORT``): a mock run must never go out for real."""
+    (``transport`` is the current ``MAIL_TRANSPORT``): a mock run must never go out for real.
+    ``sender_address``: from now on the campaign sends as this address (the caller has checked
+    that this content passed a test to it, ``gate.resume_problem``)."""
 
     def apply(conn: sqlite3.Connection, c: Campaign) -> str:
         mismatch = transport_mismatch(c, transport)
@@ -385,9 +411,12 @@ def resume(db: Database, campaign_id: int, now: datetime, *, transport: str) -> 
             raise CampaignError(mismatch)
         conn.execute(
             "UPDATE campaigns SET status = ?, consecutive_failures = 0, "
-            "consecutive_throttles = 0, last_error = NULL, resume_at = NULL WHERE id = ?",
-            (QUEUED, c.id),
+            "consecutive_throttles = 0, last_error = NULL, resume_at = NULL, "
+            "sender_address = COALESCE(?, sender_address) WHERE id = ?",
+            (QUEUED, sender_address, c.id),
         )
+        if sender_address is not None and sender_address != c.sender_address:
+            return f"Resumed, sending as {sender_address} from now on."
         return "Resumed."
 
     return _change(db, campaign_id, CAN_RESUME, "resumed", now, apply)

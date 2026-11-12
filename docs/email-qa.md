@@ -1,8 +1,72 @@
 # Email rendering checklist (manual)
 
 Automated tests check the HTML (no scripts, image attributes, size, footer, escaping), but only real mail apps show
-how it looks. Use this list in stage 12, once test sends through Graph work. `docs/sample-email.html` is the same
-template with a sample body; open it in a browser first for a quick look.
+how it looks. Use this list once test sends through Graph work. `docs/sample-email.html` is the same template with
+a sample body; open it in a browser first for a quick look.
+
+## First real send (do this once, before the first bulk send)
+
+Nothing in the automated tests talks to Microsoft. This is the first time the app really sends, so go step by step
+and write the results in the table at the end.
+
+1. **Configure.** In the container settings: `MAIL_TRANSPORT=graph`, `MS_CLIENT_ID` (from
+   [entra-setup.md](entra-setup.md)), ideally `TOKEN_CACHE_KEY`; restart. The menu shows **not connected**.
+2. **Connect the account.** Account page → **Connect Outlook account** → open the link shown, enter the code, sign
+   in with the @outlook.com account, **Accept**. The page shows *Sending as you@outlook.com*. The home page says
+   *Connected as ...*.
+3. **Make a test draft.** New send → upload a small CSV with **only your own addresses** (an Outlook.com one and a
+   Gmail one, e.g. `Email,First Name` / `you@outlook.com,Jake` / `you@gmail.com,Jake`). Map the columns, continue
+   to compose, write the "uses everything" message from *Before you start* below, fill in the footer, **Save**.
+   The Send section says *Send a test of this version first*, and the start page has no start button.
+4. **Send test to me.** In *Send a test to yourself*, pick row 1 and select **Send test to me**. Expected: *Test sent
+   to you@outlook.com at ...* and the status line *Test sent to ... for this version*. If it says *The test wasn't
+   sent: ...*, note the message and code (e.g. `HTTP 403 ErrorAccessDenied`) and see Troubleshooting in
+   entra-setup.md. Nothing else is needed for a retry except waiting 30 seconds.
+5. **Check it arrived.** In Outlook.com: the test is in the Inbox (or Junk: note it) with subject
+   `[TEST] ...`, and a copy is in **Sent Items**.
+6. **Check the headers** (Outlook.com: open the message → ⋯ → View → **View message source**; Gmail: ⋮ → **Show
+   original**). Record in the table:
+   - `From:` is your @outlook.com address. Which display name is shown: the business name from the footer, or your
+     Microsoft profile name?
+   - `To:` is only your address; there is no `Cc`/`Bcc`.
+   - `List-Unsubscribe: <https://<your domain>/u/...>` is present, on one line, and the link is the same as the
+     Unsubscribe link at the bottom of the email.
+   - `List-Unsubscribe-Post: List-Unsubscribe=One-Click` is present.
+   - `Message-ID:` ends in `@<your domain>` (kept) or was replaced by Microsoft (write down what it is).
+   - `Content-Type: multipart/alternative` with a `text/plain` and a `text/html` part.
+   - Gmail only: *Show original* says SPF, DKIM and DMARC **PASS**.
+7. **Rendering.** Go through *Mail apps* and *What to look for* below with the test in Outlook.com (and any other app
+   that can open that mailbox, e.g. the Outlook phone app).
+8. **Tiny real send.** The test only ever goes to the signed-in Outlook address (forwarding it would change the
+   headers), so the Gmail copy comes from a real send of the two-address list: select **Start sending** and send it
+   (2 emails). Check the Gmail copy: headers as in step 6, rendering in Gmail web and the Gmail app, and whether
+   Gmail shows its own *Unsubscribe* next to the sender name (Gmail only does that for some senders, sometimes
+   only after a few emails, so "not yet" is a normal answer). Clicking the footer **Unsubscribe** link opens the
+   unsubscribe page (stage 13; until then a "not found" page, which is expected).
+9. **Edit check** (on a new upload of the list, since each upload is sent once): change one word and save; the
+   compose page says *The message changed since your last test* and the start page refuses until a new test is
+   sent.
+
+### Results of the first real send
+
+Fill in, with the date. Anything marked "no" is worth telling the developer about.
+
+| Check | Outlook.com copy | Gmail copy | Notes |
+|---|---|---|---|
+| Date tested | | | |
+| Test send accepted (no error on the page) | | n/a | |
+| Landed in Inbox (not Junk/Spam) | | | |
+| Copy in Sent Items | | n/a | |
+| `From` address = your @outlook.com | | | |
+| `From` display name shown (business name or profile name?) | | | |
+| Only one `To`, no `Cc`/`Bcc` | | | |
+| `List-Unsubscribe` present and correct | | | |
+| `List-Unsubscribe-Post: List-Unsubscribe=One-Click` present | | | |
+| `Message-ID` kept (`@your domain`) or replaced (write it) | | | |
+| Plain-text and HTML parts both present | | | |
+| SPF / DKIM / DMARC (Gmail "Show original") | n/a | | |
+| Mail app shows its own Unsubscribe button | | | |
+| Rendering checklist below passed | | | |
 
 ## Before you start
 
@@ -13,7 +77,8 @@ template with a sample body; open it in a browser first for a quick look.
       ++underline++, a link, a bullet list, a numbered list, a long paragraph, `{{first_name|Friend}}`, and a
       two-line sign-off.
 - [ ] Fill in the footer: business name, a two- or three-line postal address, advertisement notice on.
-- [ ] Send the test to the accounts below (an Outlook.com and a Gmail address at least).
+- [ ] Check the test (it goes to your Outlook.com address) and the Gmail copy from the tiny real send (step 8
+      above) in the apps below.
 
 ## Mail apps
 

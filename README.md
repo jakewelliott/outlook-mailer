@@ -63,9 +63,9 @@ Every email uses one Christmas template (`app/templates/email/christmas.html.j2`
 [Cerberus](https://github.com/TedGoas/Cerberus) by Ted Goas, MIT): a header band with a Christmas-tree photo behind
 the business name and "Merry Christmas", a cream card holding your message, and a footer with the business name,
 postal address, "This message is an advertisement." (can be switched off), why the person is getting the email, and
-an **Unsubscribe** link. It is designed to work in Outlook (classic and new), Outlook.com, Gmail and Apple Mail, light and dark
-mode, and reads fine with images turned off. The plain-text version ends with the same footer. Images are served by
-the app at `/img/...` (public, no sign-in) and are public domain or the project's own work; see
+an **Unsubscribe** link. It is designed to work in Outlook (classic and new), Outlook.com, Gmail and Apple Mail,
+light and dark mode, and reads fine with images turned off. The plain-text version ends with the same footer.
+Images are served by the app at `/img/...` (public, no sign-in) and are public domain or the project's own work; see
 `app/static/email-img/CREDITS.md`. `docs/sample-email.html` shows a rendered example and `docs/email-qa.md` is the
 checklist for testing it in real mail apps.
 
@@ -106,7 +106,10 @@ accounts; the app shows whatever Microsoft sends, never a fixed address). Open t
 code within 15 minutes, sign in with the @outlook.com account and select **Accept**. The page updates by itself
 (or use **Refresh**) and then shows *Sending as you@outlook.com (Your Name)*; that address is the `From` of every
 email. Only one sign-in runs at a time and it can be cancelled; reconnecting and then cancelling keeps the
-existing sign-in. Work or school accounts are refused. The menu shows whether the account is connected (or needs connecting again).
+existing sign-in. Work or school accounts are refused. The menu shows whether the account is connected (or
+needs connecting again). After Microsoft refuses a token (HTTP 401) the app asks Microsoft for a fresh one on the next
+send instead of reusing the saved one; *reconnect needed* goes away only when that renewal succeeds, a send is
+accepted, or you connect again.
 
 The app asks for `Mail.Send` and `User.Read` (MSAL adds `offline_access`, which lets it renew access by itself).
 The saved sign-in (MSAL's token cache) is `DATA_DIR/msal_cache.json`, readable only by the app (mode 0600) and
@@ -127,8 +130,38 @@ sign-in is needed and the app never contacts Microsoft.
 When the preview looks right, **Start sending** on the compose page opens a confirmation page: how many people
 will be emailed, the pacing, the daily limit and an estimated time. Starting takes a snapshot of the saved message
 and of the eligible recipients, so editing the draft afterwards doesn't change a running send. Only one send can be
-unfinished at a time, and each upload is sent once. (From stage 12, sending also needs a successful test send of
-the current version of the message to yourself; `app/gate.py` is where that check goes.)
+unfinished at a time, and each upload is sent once.
+
+### Test send
+
+Sending to the list is **locked until a test of the current version has gone out to you**. On the compose page,
+**Send test to me** sends the saved message once to the connected Outlook address (with `MAIL_TRANSPORT=mock`, to
+the outbox, addressed to `you@example.com`), with `[TEST]` before the subject. Pick whose merge fields to use (one
+of the first 50 recipients, or the sample with no first name); the unsubscribe link in a test is always for your
+own address, so clicking it can't unsubscribe a customer. The compose and start pages then say *Test sent to you at
+... for this version*. Any edit changes the version (a hash of the saved content), so the pages say *The message
+changed since your last test* and the start button disappears until a new test goes out; connecting a different
+account also needs a new test. Tests are limited to one every 30 seconds and 20 per 24 hours, and because they use
+the same mailbox they count toward `DAILY_SEND_CAP`, a send to the list waits the usual spacing after one, and a test
+waits that spacing after the last email of a send (*wait N more seconds*). While a send to the list is in progress
+tests are refused: pause it, send the test, resume it. A failed test shows Microsoft's reason and doesn't unlock
+sending; neither does a test whose outcome is unknown (*Not sure whether the test ... went out*: check your inbox
+and Sent Items). A send remembers the address its test went to: if a different Outlook account is connected while
+it runs, it stops before sending anything more. Connect the original account again and **Resume**, or send a test
+of the same message to the new address and then **Resume** (it goes on as the new address), or cancel. The first real test is also the moment to check the headers and
+the look in real mail apps: see [docs/email-qa.md](docs/email-qa.md).
+
+### Sending through Microsoft
+
+With `MAIL_TRANSPORT=graph` each email goes to Microsoft Graph `POST /me/sendMail` as base64 MIME
+(`app/transport/graph.py`), from the connected address; a copy lands in Sent Items. The `From` display name is the
+footer's business name; Outlook.com may show the account's profile name instead (check in the test). If no account
+is connected, a send stops at once with "Connect your Outlook account". Each request is given at most 12 seconds
+(token renewal included: connect 5 s, read 10 s), so a send in flight at shutdown always finishes in time. When
+Microsoft answers that the *account* can't send (401, 403, or codes such as `ErrorMessageSubmissionBlocked`,
+`ErrorAccessDenied`, `ErrorSendAsDenied`, `ErrorQuotaExceeded`), the send stops with a message saying what to
+do, since every later email would fail too; a refusal of one message (another 4xx, e.g. 400) fails only that
+person. Microsoft's own error text and the token are never stored or logged, only its error code.
 
 Each send records the transport it was started with (`MAIL_TRANSPORT`, shown on the send's page and in the list),
 and only that transport ever sends it. A send started in `mock` mode that is still unfinished when the app is
@@ -145,15 +178,19 @@ A background worker in the app sends one email at a time:
   send is skipped (shown as *Skipped (unsubscribed)*). International domains match whether written in Unicode or
   punycode.
 - **Retries**: only a failure where the email certainly wasn't accepted is retried: Microsoft couldn't be
-  reached or the connection timed out before the email was sent, or Microsoft answered 429/503 (busy). It is retried
-  after 30 seconds, 2 minutes and 10 minutes, 3 attempts in all; then it is marked failed. A permanent rejection
-  (another 4xx answer) is not retried. Other people are sent to while one waits for a retry.
-- **Throttling**: when Microsoft says how long to wait (`Retry-After`), **nothing is sent to anyone** before that
-  time, even after a restart; the send's page shows the time. Being asked to wait isn't counted as a failure or as
-  one of the person's 3 attempts, but if it happens 10 times in a row without a success the send stops.
-- **Stops**: if the Microsoft sign-in has expired or been revoked, 5 attempts in a row fail, or Microsoft keeps
-  throttling, the send stops (*Stopped by an error*) with the reason. Fix the cause (reconnect on the Account page)
-  and press **Resume**. A send you paused stays paused; the reason is shown and logged.
+  reached, the connection timed out before the email was sent, or the sign-in couldn't be renewed just then. It is
+  retried after 30 seconds, 2 minutes and 10 minutes, 3 attempts in all; then it is marked failed. A 429/503 (busy)
+  answer is throttling (below). A permanent rejection (another 4xx answer) is not retried. Other people are sent
+  to while one waits for a retry.
+- **Throttling**: when Microsoft answers 429/503 and says how long to wait (`Retry-After`, 60 s if it doesn't),
+  **nothing is sent to anyone** before that time, even after a restart; the send's page shows the time. Being
+  asked to wait isn't counted as a failure or as one of the person's 3 attempts, but if it happens 10 times in a
+  row without a success the send stops.
+- **Stops**: if no account is connected, a different account is connected than the one the send was tested with,
+  the Microsoft sign-in has expired or been revoked, Microsoft says the account can't send (blocked, no permission, limit reached), 5 attempts in a row fail, or Microsoft keeps
+  throttling, the send stops (*Stopped by an error*) with the reason. Fix the cause (reconnect on the Account page,
+  or sign in at outlook.com and clear the block) and press **Resume**. A send you paused stays paused; the reason
+  is shown and logged.
 - **Exactly once**: each person is marked "sending" in the database before the email is handed to the transport,
   and the result is recorded straight after (retried a few times if the database is busy; nothing else is sent
   until it is saved; after 10 failed tries the send stops, and after a restart that person is reported as
@@ -163,7 +200,7 @@ A background worker in the app sends one email at a time:
   during send — ..."), and when the connection fails after the email was handed over: a timeout waiting for
   Microsoft's answer, the connection dropping mid-answer, or a 500/502/504 server error ("outcome unknown — ...").
   These count against the daily limit and as failed attempts. On a normal shutdown the worker waits up to 15 s for
-  an in-flight email to finish first; the Graph request timeout (stage 12) is shorter than that, and the container's
+  an in-flight email to finish first; the Graph request budget (12 s) is shorter than that, and the container's
   stop grace period (`stop_grace_period: 30s` in `compose.yaml`) is longer, so the result is always saved. Docker's
   default is only 10 s: if you run the container another way, give it at least 30 s (`docker stop -t 30`, or
   `--stop-timeout=30` in the Unraid template's Extra Parameters). Everything else carries on after a restart.

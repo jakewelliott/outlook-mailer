@@ -1,6 +1,6 @@
 # Research notes (checked 2026-10-25)
 
-Saved from the planning stage. Section 2.3 conclusion is superseded: we send MIME, which may carry List-Unsubscribe-Post (see 2.6; verified in stage 12).
+Saved from the planning stage. Section 2.3 conclusion is superseded: we send MIME, which may carry List-Unsubscribe-Post (see 2.6; checked on the first real test send, docs/email-qa.md).
 
 ## 2. Key findings from research (checked 2026-10-25)
 
@@ -62,3 +62,11 @@ Source: https://www.ftc.gov/business-guidance/resources/can-spam-act-compliance-
 | Exchange copies the MIME into a draft, parses it into message properties and recipients, and transport then sends the MIME "more or less intact". So recipients come from the MIME headers (`To`/`Cc`/`Bcc`): the app must never write any but one `To`. Microsoft doesn't say which headers survive. Expect From/Sender to be the signed-in mailbox (a different From may be refused as send-as), and Message-ID, List-Unsubscribe and List-Unsubscribe-Post to be kept. Stage 12 checks this on a real test send. | https://learn.microsoft.com/en-us/graph/outlook-things-to-know-about-send-mail (updated 2025-08-06) |
 | No size limit is documented for MIME sendMail. Graph's Outlook docs put the single-request ceiling for attachments at 3 MB (larger needs an upload session, with chunks under 4 MB), and 4 MB is Graph's usual request limit, so the app refuses a base64 payload over 4 MB. A 102 KB email (Gmail's clipping point, which the compose page enforces) comes to a few hundred KB even if every character is non-ASCII. | https://learn.microsoft.com/en-us/graph/outlook-large-attachments (updated 2025-08-06) |
 | Python's `email` package folds a long `List-Unsubscribe` value into RFC 2047 encoded words (and decodes them again when parsing, so a round-trip test doesn't show it). Mail apps don't decode encoded words in that header, so the app writes it raw on one line (under the 998-character limit). Python also refuses a non-ASCII local part without SMTPUTF8 and, with the SMTP policy, would send non-ASCII text as raw 8-bit; the app uses quoted-printable/base64 and IDNA domains instead. | (tested with Python 3.12, `email.policy.SMTP`) |
+
+### 2.7 Graph error responses (checked 2026-11-11, stage 12)
+| Finding | Source |
+|---|---|
+| Errors are an HTTP status plus `{"error": {"code", "message", "innerError": {...}}}`. Apps should code against `code` (and nested `innerError` codes), never `message`, which is for developers, not localised and may change. 403 = "access denied ... not enough permission or no required license"; 429 = throttled, wait before repeating; 503 = temporarily unavailable, may carry `Retry-After`; 504 = gateway timeout (upstream didn't answer in time: it may still have processed the request). | https://learn.microsoft.com/en-us/graph/errors (updated 2025-08-06) |
+| `ErrorMessageSubmissionBlocked` is reported for senders Outlook's filtering has blocked (account verification needed); `ErrorAccessDenied` / generic 403 on sendMail is reported for a missing `Mail.Send` permission or consent; `MailboxNotEnabledForRESTAPI` for accounts without a usable mailbox. Microsoft documents none of these for personal accounts specifically. Exchange can also accept a message (202) and refuse it later once sending limits are hit, so a 202 doesn't prove delivery. | https://techcommunity.microsoft.com/discussions/exchange_general/403-error-sending-email-in-exchange-online-using-graph-api/4419780 ; https://learn.microsoft.com/en-us/answers/questions/930733/graph-api-send-mail-error-mailboxnotenabledforrest ; https://community.blueprism.com/discussion/microsoft-blocking-emails-sent-via-graph-api ; https://support.microsoft.com/en-US/Outlook/sending-limits-in-outlook-com |
+
+Result: map by `error.code` first (account-level codes stop the campaign whatever the status), then by status; see DECISIONS "Graph responses".

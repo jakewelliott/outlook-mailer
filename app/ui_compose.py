@@ -20,7 +20,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from app import campaigns, compose, merge, render
+from app import campaigns, compose, gate, merge, render
 from app.compose import DraftContent
 from app.config import Settings
 from app.db import Database
@@ -109,11 +109,20 @@ def _page(
     scheme: Scheme,
     just_saved: bool = False,
     status_code: int = 200,
+    test_result: gate.SentTest | None = None,
+    test_error: str | None = None,
 ) -> Response:
     preview_errors: compose.Errors = compose.validate(saved) if saved is not None else {}
     size = None
+    test_status = None
+    s = _settings(request)
+    account = request.app.state.msauth.sender()
+    zone = campaigns.local_zone(s.tz)
     if saved is not None and not preview_errors:
         size = _size(request, saved, report)
+        test_status = gate.status(
+            _db(request), s, account, draft_id, compose.content_hash(saved), zone
+        )
     query = urlencode({"r": choice, "scheme": scheme})
     return templates.TemplateResponse(
         request,
@@ -137,6 +146,17 @@ def _page(
             "sample_email": SAMPLE_VALUES["email"],
             "query": query,
             "just_saved": just_saved,
+            "test_status": test_status,
+            "test_result": test_result,
+            "test_result_at": (
+                campaigns.local_time(test_result.sent_at, zone) if test_result else None
+            ),
+            "test_error": test_error,
+            "test_to": gate.own_address(s, account),
+            "mock": s.mail_transport == "mock",
+            "test_prefix": gate.TEST_SUBJECT_PREFIX,
+            "test_interval": gate.MIN_SECONDS_BETWEEN_TESTS,
+            "test_per_day": gate.MAX_TESTS_PER_DAY,
             "campaign_id": campaigns.campaign_for_draft(_db(request), draft_id),
             "default_reason": render.DEFAULT_REASON.format(
                 name=form.business_name.strip() or "your business"
@@ -153,12 +173,18 @@ def compose_form(
     r: str | None = None,
     scheme: str | None = None,
     saved: str | None = None,
+    test: str | None = None,
 ) -> Response:
     result = load_report(request, draft_id)
     if isinstance(result, Response):
         return result
     draft, report = result
     stored = compose.get_content(_db(request), draft.id)
+    test_result = None
+    if test is not None and re.fullmatch(r"[1-9][0-9]{0,11}", test, re.ASCII):
+        test_result = gate.get_test(_db(request), int(test))
+        if test_result is not None and test_result.draft_id != draft.id:
+            test_result = None
     form = stored if stored is not None else compose.defaults(_db(request))
     return _page(
         request,
@@ -170,6 +196,7 @@ def compose_form(
         choice=_pick(report, r) or _pick(report, None) or SAMPLE,
         scheme=_scheme(scheme) or "light",
         just_saved=saved == "1" and stored is not None,
+        test_result=test_result,
     )
 
 
@@ -208,6 +235,63 @@ async def compose_save(request: Request, draft_id: str) -> Response:
     await run_in_threadpool(compose.save_content, _db(request), draft.id, c)
     query = urlencode({"r": choice, "scheme": scheme, "saved": "1"})
     return RedirectResponse(f"/send/{draft.id}/compose?{query}#preview", status_code=303)
+
+
+@router.post("/send/{draft_id}/test-send")
+async def send_test_to_me(request: Request, draft_id: str) -> Response:
+    """Send one test of the saved content to Jake's own address (see ``app.gate``)."""
+    form = await request.form()
+    result = await run_in_threadpool(load_report, request, draft_id)
+    if isinstance(result, Response):
+        return result
+    draft, report = result
+    raw_r, raw_scheme = form.get("r"), form.get("scheme")
+    choice = _pick(report, raw_r if isinstance(raw_r, str) else None) or _pick(report, None)
+    choice = choice or SAMPLE
+    scheme = _scheme(raw_scheme if isinstance(raw_scheme, str) else None) or "light"
+    db, s = _db(request), _settings(request)
+    stored = await run_in_threadpool(compose.get_content, db, draft.id)
+    error, status_code = None, 409
+    if stored is None or compose.validate(stored):
+        error = "Save the message (without problems) before sending a test."
+    else:
+        size = await run_in_threadpool(_size, request, stored, report)
+        if size.too_large:
+            error = size.message()
+    if error is None and stored is not None:
+        try:
+            sent = await gate.send_test(
+                db,
+                s,
+                request.app.state.transport,
+                draft_id=draft.id,
+                content=stored,
+                values=_values(report, choice),
+                sender=await run_in_threadpool(request.app.state.msauth.sender),
+                clock=request.app.state.clock,
+            )
+        except gate.CantSendTest as exc:
+            error = str(exc)
+            status_code = 429 if exc.rate_limited else 409
+        else:
+            query = urlencode({"r": choice, "scheme": scheme, "test": str(sent.id)})
+            return RedirectResponse(f"/send/{draft.id}/compose?{query}#test-send", status_code=303)
+    form_content = stored if stored is not None else compose.defaults(db)
+    return await run_in_threadpool(
+        partial(
+            _page,
+            request,
+            draft.id,
+            report,
+            form_content,
+            saved=stored,
+            errors={},
+            choice=choice,
+            scheme=scheme,
+            status_code=status_code,
+            test_error=error,
+        )
+    )
 
 
 def _preview_source(

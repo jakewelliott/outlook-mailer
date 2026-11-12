@@ -387,7 +387,8 @@ def test_auth_error_stops_the_campaign(tmp_path: Path) -> None:
     env.drive()
     c = campaigns.get_campaign(env.db, cid)
     assert c is not None and c.status == campaigns.STOPPED_ERROR
-    assert c.last_error and "Reconnect the account" in c.last_error
+    assert c.last_error and "token expired" in c.last_error
+    assert c.last_error.startswith(sender.AUTH_STOP_MESSAGE)
     row = env.recipients(cid)["ada@example.com"]
     assert row["status"] == campaigns.R_PENDING and row["attempts"] == 0
     assert env.step() is None  # nothing more is tried
@@ -430,7 +431,9 @@ def test_a_success_resets_the_failure_count(tmp_path: Path) -> None:
 
 
 class Exploding(MockTransport):
-    async def send(self, mime: bytes, *, recipient: str) -> SendResult:
+    async def send(
+        self, mime: bytes, *, recipient: str, expected_sender: str | None = None
+    ) -> SendResult:
         self.attempts[recipient] += 1
         if self.attempts[recipient] == 1:
             raise RuntimeError("socket closed")
@@ -560,8 +563,8 @@ def test_opt_out_checked_after_rendering(tmp_path: Path) -> None:
     cid = env.campaign(["ada@example.com"])
     build = env.worker._build
 
-    def build_then_opt_out(c: campaigns.Campaign, row: object) -> bytes:
-        mime = build(c, row)  # type: ignore[arg-type]
+    def build_then_opt_out(c: campaigns.Campaign, row: object, account: object) -> bytes:
+        mime = build(c, row, account)  # type: ignore[arg-type]
         (tmp_path / "unsubscribed.txt").write_text("ada@example.com\n", encoding="utf-8")
         return mime
 
@@ -581,7 +584,9 @@ class Hanging(MockTransport):
         super().__init__(outbox)
         self.started = asyncio.Event()
 
-    async def send(self, mime: bytes, *, recipient: str) -> SendResult:
+    async def send(
+        self, mime: bytes, *, recipient: str, expected_sender: str | None = None
+    ) -> SendResult:
         self.attempts[recipient] += 1
         self.started.set()
         await asyncio.Event().wait()

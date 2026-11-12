@@ -191,16 +191,20 @@ def render_message(
     unsubscribe_secret: str,
     prepared: content.PreparedBody | None = None,
     force_dark: bool = False,
+    unsubscribe_for: str | None = None,
 ) -> RenderedEmail:
     """One recipient's subject, HTML and plain text. ``c`` must pass ``validate``.
 
     ``prepared`` may be passed to reuse ``content.prepare(c.body)`` across recipients.
     ``force_dark`` is for the admin preview only (see ``render.render_email``).
+    ``unsubscribe_for``: the address the unsubscribe link is for, if not ``values["email"]``
+    (a test send shows a customer's merge values but goes to Jake, so its link must be his).
     """
     prepared = prepared or content.prepare(c.body)
     fragment, text = prepared.for_recipient(values)
     footer = c.footer()
-    unsub = unsubscribe_url(public_base_url, unsubscribe_secret, values.get("email") or "")
+    unsub_email = unsubscribe_for if unsubscribe_for is not None else values.get("email") or ""
+    unsub = unsubscribe_url(public_base_url, unsubscribe_secret, unsub_email)
     subject = content.render_subject(c.subject, values)
     page = render.render_email(
         fragment,

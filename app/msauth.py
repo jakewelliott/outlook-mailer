@@ -53,6 +53,7 @@ from email_validator import EmailNotValidError, validate_email
 
 from app.config import Settings
 from app.db import Database
+from app.emails import normalise_key
 
 log = logging.getLogger("outlook_mailer.msauth")
 
@@ -88,6 +89,10 @@ class NotSignedIn(AuthError):
 
 class ReauthRequired(AuthError):
     """The cached sign-in can't be renewed (expired, revoked, password changed...)."""
+
+
+class AccountChanged(AuthError):
+    """The connected account isn't the one the caller expected (it was switched meanwhile)."""
 
 
 class TokenUnavailable(Exception):
@@ -392,7 +397,10 @@ class MicrosoftAuth:
         self._slot: _Starting | _Flow | None = None  # one sign-in at a time
         self._sender: Sender | None = None
         self._has_account = False  # the current cache holds an account
-        self._reauth = False  # the last silent renewal said the sign-in is unusable
+        # The sign-in looks unusable: the last silent renewal said so, or Graph refused its token
+        # (401). While set, get_access_token forces a refresh (a cached token proves nothing),
+        # and only a successful forced refresh, an accepted send or a new sign-in clears it.
+        self._reauth = False
         self._error: str | None = None
         self._notice: str | None = None
         self._cache_problem: str | None = None
@@ -543,12 +551,15 @@ class MicrosoftAuth:
         self.load()
         starting = _Starting()
         with self._state_lock:
+            refused = None
             if isinstance(self._slot, _Flow):
-                raise SignInError("A sign-in is already in progress. Finish or cancel it first.")
-            if self._slot is not None:
-                raise SignInError(
-                    "A sign-in is already being started. Wait a moment, then reload the page."
-                )
+                refused = "A sign-in is already in progress. Finish or cancel it first."
+            elif self._slot is not None:
+                refused = "A sign-in is already being started. Wait a moment, then reload the page."
+            if refused is not None:
+                # Shown on the Account page (the route redirects there and ignores the error).
+                self._notice = refused
+                raise SignInError(refused)
             self._slot = starting
             self._error = self._notice = None
         try:
@@ -692,11 +703,17 @@ class MicrosoftAuth:
         except Exception as exc:
             log.error("Can't save the Microsoft sender: %s", type(exc).__name__)
             self._cache, self._client = old
-            with contextlib.suppress(OSError):  # put the previous sign-in back on disk
+            try:  # put the previous sign-in back on disk
                 if _accounts(self._cache):
                     self._cache.has_state_changed = True
                     self._save(strict=True)
                 else:
+                    self._file.delete()
+            except OSError:
+                # The file holds the new sign-in but the database the old sender: delete it so
+                # the two can't disagree (after a restart this means signed out).
+                log.error("Can't restore the previous Microsoft token cache; deleting it")
+                with contextlib.suppress(OSError):
                     self._file.delete()
             return "Signed in, but the address couldn't be saved in the database. Connect again."
         return None
@@ -742,8 +759,12 @@ class MicrosoftAuth:
 
     # --- tokens ---
 
-    def get_access_token(self) -> str:
+    def get_access_token(self, expected_address: str | None = None) -> str:
         """An access token for Graph (``Mail.Send``), renewed silently when needed.
+
+        With ``expected_address``, raises ``AccountChanged`` (an ``AuthError``) unless the
+        connected account is that address: checked under the lock a sign-in or sign-out takes to
+        switch accounts, so the token returned belongs to it.
 
         Raises ``NotSignedIn`` or ``ReauthRequired`` (both ``AuthError``), or
         ``TokenUnavailable`` when Microsoft can't be reached. Calls are serialised (they share
@@ -755,14 +776,27 @@ class MicrosoftAuth:
         with self._msal_lock:
             with self._state_lock:
                 signed_in = self._signed_in()
+                force = self._reauth
+                current = self._sender
             if not signed_in:
                 raise NotSignedIn("No Microsoft account is connected.")
+            if (
+                expected_address is not None
+                and current is not None
+                and normalise_key(current.address) != normalise_key(expected_address)
+            ):
+                raise AccountChanged(
+                    f"The connected Outlook account changed to {current.address} (this message "
+                    f"is from {expected_address}). Nothing was sent."
+                )
             try:
                 app = self._app()
                 accounts = app.get_accounts()
                 if not accounts:
                     raise NotSignedIn("No Microsoft account is connected.")
-                result = app.acquire_token_silent_with_error(list(SCOPES), account=accounts[0])
+                result = app.acquire_token_silent_with_error(
+                    list(SCOPES), account=accounts[0], force_refresh=force
+                )
             except AuthError:
                 raise
             except Exception as exc:
@@ -771,8 +805,9 @@ class MicrosoftAuth:
             finally:
                 self._save()
             if result and "access_token" in result:
-                with self._state_lock:
-                    self._reauth = False
+                if force:  # a new token from Microsoft, not the one Graph refused
+                    with self._state_lock:
+                        self._reauth = False
                 return str(result["access_token"])
             if result is None or result.get("error") in _REAUTH_ERRORS:
                 with self._state_lock:
@@ -782,6 +817,19 @@ class MicrosoftAuth:
             text = describe_error(result)
             log.warning("Microsoft couldn't renew the token: %s", text)
             raise TokenUnavailable(text)
+
+    def note_token_rejected(self) -> None:
+        """Graph answered 401 to a token from ``get_access_token``: show "reconnect needed", and
+        make the next ``get_access_token`` force a refresh instead of handing out the cached
+        token again. Cleared by a successful forced refresh, an accepted send or a sign-in."""
+        with self._state_lock:
+            if self._signed_in():
+                self._reauth = True
+
+    def note_token_accepted(self) -> None:
+        """Graph accepted a send: the sign-in works, so "reconnect needed" no longer applies."""
+        with self._state_lock:
+            self._reauth = False
 
     # --- signing out ---
 

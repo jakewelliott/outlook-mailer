@@ -148,6 +148,12 @@ Stage 5 (`app/merge.py`) leaves three hazards for stage 6. Each needs a test.
   double sends.
 - Bulk send is locked until a test send of the **current** content (hash) to the signed-in address succeeds.
 - **At send time** every recipient is checked against `unsubscribed.txt` and skipped if present.
+- As built (stage 12): `app/transport/graph.py` (response mapping table in its docstring; DECISIONS "Graph transport"
+  and "Graph responses") and `app/gate.py` (test send and gate; DECISIONS "Test send and gate"). The test send
+  ("Send test to me" on the compose page) is required in mock mode too, counts toward the daily cap, and is
+  limited to 1 per 30 s and 20 per 24 h (refused while a campaign is sending, and paced after a bulk send). A
+  graph campaign stops if a different account than the tested one is connected. First real send steps and results:
+  [email-qa.md](email-qa.md).
 
 ## Unsubscribe
 

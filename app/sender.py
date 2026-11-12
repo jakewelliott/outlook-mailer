@@ -17,6 +17,8 @@ never sent by Graph, or the other way round; it can only be cancelled):
 4. Daily cap: ``DAILY_SEND_CAP`` messages per rolling 24 h **across all campaigns**, counted from
    ``send_log`` (sent, or outcome unknown). When reached the campaign is ``paused_daily_cap``
    until the oldest counted send leaves the window.
+   Test sends (``app.gate``) write ``send_log`` rows too (no campaign), so they count here and
+   in the pacing.
 5. Pacing: at least ``60 / SEND_RATE_PER_MINUTE`` seconds between transport calls (``send_log``,
    so it holds across restarts and campaigns), and none before the provider's last
    ``Retry-After`` time (``send_throttle``, also persisted).
@@ -59,7 +61,12 @@ Outcomes (see ``app.transport.base`` for how a transport chooses them):
   retried; its ``send_log`` outcome stays NULL so it counts against the daily cap.
 - permanent -> ``failed``.
 - auth error -> the recipient goes back to ``pending`` (the attempt isn't counted) and the
-  campaign is ``stopped_error`` until Jake reconnects the account and resumes.
+  campaign is ``stopped_error`` until Jake reconnects (or unblocks) the account and resumes.
+  In graph mode the worker also stops the campaign this way, without calling the transport,
+  when no account is connected (``sender`` returns None). It stops it too (``stopped_error``,
+  nothing sent, the recipient stays ``pending``) when the connected account isn't the one the
+  campaign was tested with and started as (``campaigns.sender_address``); see
+  ``gate.resume_problem`` for resuming it.
 
 An exception while rendering is a retryable failed attempt (a ``MessageError``: permanent). An
 exception from ``transport.send`` is outcome unknown (a ``MessageError``, raised before
@@ -85,7 +92,9 @@ from app.campaigns import Campaign, add_event, iso, parse_iso
 from app.compose import DraftContent
 from app.config import Settings
 from app.db import Database
+from app.emails import normalise_key
 from app.message import MessageError, build_mime, check_single_recipient
+from app.msauth import Sender
 from app.recipients import Recipient
 from app.transport.base import SendResult, Transport
 from app.unsubscribes import UnsubscribeWatcher
@@ -108,12 +117,13 @@ ERROR_PAUSE_SECONDS = 30.0
 # Must be more than the transport's request timeout (Graph, stage 12) and less than the
 # container's stop grace period (compose.yaml stop_grace_period: 30s).
 SHUTDOWN_GRACE_SECONDS = 15.0
-AUTH_STOP_MESSAGE = (
-    "The Microsoft sign-in has expired or was revoked. Reconnect the account on the Account "
-    "page, then resume this send."
-)
+# Put before the transport's reason when an auth result stops a campaign.
+AUTH_STOP_MESSAGE = "Microsoft won't take mail from the Outlook account right now:"
+AUTH_STOP_AFTER = "Once that is fixed, resume this send."
+NOT_SIGNED_IN = "No Outlook account is connected. Connect your Outlook account on the Account page."
 
 Clock = Callable[[], datetime]
+SenderSource = Callable[[], Sender | None]
 
 
 def utcnow() -> datetime:
@@ -166,8 +176,12 @@ class SendWorker:
         transport: Transport,
         *,
         clock: Clock | None = None,
+        sender: SenderSource | None = None,
     ) -> None:
         self.db = db
+        # Graph mode: the signed-in account (``MicrosoftAuth.sender``), the From of every message.
+        # None (mock): no account; the From is ``message.PLACEHOLDER_FROM``.
+        self.sender = sender
         self.settings = settings
         self.transport = transport
         self.clock = clock or utcnow
@@ -457,6 +471,14 @@ class SendWorker:
                 f"app: the row is then marked failed ({campaigns.UNKNOWN_SUFFIX}). Then resume.",
             )
 
+    def _stop_sender_changed(self, c: Campaign, was: str, now_as: str, now: datetime) -> None:
+        with self.db.connect() as conn:
+            campaigns._begin_immediate(conn)
+            status = self._status(conn, c.id)
+            if status not in campaigns.RUNNABLE:  # paused or cancelled meanwhile
+                return
+            self._stop(conn, c.id, status, now, campaigns.sender_changed_message(was, now_as))
+
     def _skip(self, c: Campaign, row: _Row, now: datetime) -> None:
         with self.db.connect() as conn:
             changed = conn.execute(
@@ -512,7 +534,7 @@ class SendWorker:
             self._bodies[c.id] = (c.content, content.prepare(c.content.body))
         return self._bodies[c.id]
 
-    def _build(self, c: Campaign, row: _Row) -> bytes:
+    def _build(self, c: Campaign, row: _Row, account: Sender | None) -> bytes:
         draft_content, prepared = self._body(c)
         values = merge.recipient_values(Recipient(row.row_no, row.email, row.first_name))
         rendered = compose.render_message(
@@ -526,16 +548,34 @@ class SendWorker:
             rendered,
             to_addr=row.email,
             to_name=row.first_name or None,
-            # Stage 12: the Graph transport sends from the signed-in address; pass it here.
-            from_addr=None,
-            from_name=draft_content.business_name.strip() or None,
+            # Graph sends as the signed-in mailbox: From is its address. The display name is the
+            # business name (Outlook.com may show the account's profile name instead).
+            from_addr=account.address if account is not None else None,
+            from_name=draft_content.business_name.strip()
+            or (account.name if account is not None else None)
+            or None,
         )
         check_single_recipient(mime, row.email)
         return mime
 
     async def _attempt(self, c: Campaign, row: _Row) -> None:
+        account = None
+        if self.sender is not None:
+            account = await asyncio.to_thread(self.sender)
+            if account is None:  # signed out: stop the campaign, nothing is sent
+                await self._save(
+                    _Outcome(c, row, SendResult.auth(NOT_SIGNED_IN), self.clock(), None)
+                )
+                return
+            if c.sender_address is not None and normalise_key(account.address) != normalise_key(
+                c.sender_address
+            ):
+                await asyncio.to_thread(
+                    self._stop_sender_changed, c, c.sender_address, account.address, self.clock()
+                )
+                return
         try:
-            mime = await asyncio.to_thread(self._build, c, row)
+            mime = await asyncio.to_thread(self._build, c, row, account)
         except MessageError as exc:
             await self._save(_Outcome(c, row, SendResult.permanent(str(exc)), self.clock(), None))
             return
@@ -555,7 +595,11 @@ class SendWorker:
             return
         # No await between the check above and the call: once stop() can run, the send began.
         try:
-            result = await self.transport.send(mime, recipient=row.email)
+            result = await self.transport.send(
+                mime,
+                recipient=row.email,
+                expected_sender=account.address if account is not None else None,
+            )
         except MessageError as exc:  # refused before anything was sent
             result = SendResult.permanent(str(exc))
         except Exception as exc:  # may have been raised after the request went out
@@ -689,7 +733,9 @@ class SendWorker:
                     status=waiting, attempts=row.attempts, last_error=error, next_attempt_at=None
                 )
                 add_event(conn, c.id, now, f"{who}: not sent, sign-in problem: {error}")
-                self._stop(conn, c.id, status, now, f"{AUTH_STOP_MESSAGE} ({error})")
+                self._stop(
+                    conn, c.id, status, now, f"{AUTH_STOP_MESSAGE} {error} {AUTH_STOP_AFTER}"
+                )
                 return
 
             if result.throttled:

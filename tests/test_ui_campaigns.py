@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import campaigns, drafts, gate
+from app import campaigns, compose, drafts, gate
 from app.config import Settings, load_settings
 from app.main import create_app
 from app.transport import SendResult
@@ -52,9 +52,25 @@ def step_all(client: TestClient, clock: FakeClock) -> None:
     asyncio.run(go())
 
 
+def pass_gate(client: TestClient, draft: str, to: str = gate.MOCK_TEST_ADDRESS) -> None:
+    """Record a successful test send of the draft's saved content (the bypass for tests that
+    aren't about the test send itself; ``test_gate.py`` covers the real flow)."""
+    db = client.app.state.db  # type: ignore[attr-defined]
+    c = compose.get_content(db, draft)
+    assert c is not None
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO test_sends (draft_id, content_hash, sent_at, to_addr, ok) "
+            "VALUES (?, ?, ?, ?, 1)",
+            (draft, compose.content_hash(c), "2026-11-30T12:00:00.000000+00:00", to),
+        )
+
+
 def ready_draft(client: TestClient) -> str:
+    """A draft with saved content that has passed the test-send gate."""
     draft = make_draft(client)
     assert save(client, draft).status_code == 303
+    pass_gate(client, draft)
     return draft
 
 
@@ -146,31 +162,6 @@ def test_only_one_active_campaign(client: TestClient) -> None:
     assert 'id="start-send"' not in page
     r = post(client, f"/send/{other}/start", {"content_hash": "0" * 64})
     assert r.status_code == 409
-
-
-def test_gate_allows_mock_only_for_now(app_settings: Settings, valid_env: dict[str, str]) -> None:
-    assert gate.check_can_start(app_settings, "a" * 32, "0" * 64) == []
-    graph = load_settings({**valid_env, "MAIL_TRANSPORT": "graph", "MS_CLIENT_ID": "x" * 36})
-    assert gate.check_can_start(graph, "a" * 32, "0" * 64)
-
-
-def test_graph_mode_has_no_worker_and_refuses_to_start(
-    valid_env: dict[str, str], tmp_path: Path
-) -> None:
-    settings = load_settings(
-        {
-            **valid_env,
-            "DATA_DIR": str(tmp_path),
-            "MAIL_TRANSPORT": "graph",
-            "MS_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
-        }
-    )
-    with TestClient(create_app(settings), base_url=BASE) as c:
-        assert c.app.state.worker is None  # type: ignore[attr-defined]
-        draft = ready_draft(c)
-        page = c.get(f"/send/{draft}/start").text
-        assert "Sending through Microsoft isn&#39;t available yet" in page
-        assert 'id="start-send"' not in page
 
 
 # --- progress, controls, results ---------------------------------------------------------------

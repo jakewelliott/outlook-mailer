@@ -107,6 +107,46 @@ MIGRATIONS: list[str] = [
         not_before TEXT NOT NULL
     );
     """,
+    # 4: test sends (stage 12). send_log rows with no campaign (campaign_id and row_no NULL) are
+    # test sends: they use the same mailbox quota, so they count against the daily cap and
+    # pacing like any other send. SQLite can't drop NOT NULL, so send_log is rebuilt.
+    # The AUTOINCREMENT counter is carried over (sqlite_sequence), so ids of deleted rows are
+    # never reused. test_sends.ok: 1 accepted, 0 failed or outcome unknown (outcome_unknown 1),
+    # NULL in flight or interrupted (not a success). campaigns.sender_address: the Outlook
+    # address a graph campaign was tested with and started as (NULL in mock mode).
+    """
+    CREATE TABLE send_log_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE,
+        row_no INTEGER,
+        started_at TEXT NOT NULL,
+        outcome TEXT CHECK (outcome IN ('sent', 'failed')),
+        CHECK ((campaign_id IS NULL) = (row_no IS NULL))
+    );
+    INSERT INTO send_log_new (id, campaign_id, row_no, started_at, outcome)
+        SELECT id, campaign_id, row_no, started_at, outcome FROM send_log;
+    DELETE FROM sqlite_sequence WHERE name = 'send_log_new';
+    INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'send_log_new', seq FROM sqlite_sequence WHERE name = 'send_log';
+    DROP TABLE send_log;
+    ALTER TABLE send_log_new RENAME TO send_log;
+    CREATE INDEX send_log_started_at ON send_log (started_at);
+    CREATE TABLE test_sends (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        draft_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        sent_at TEXT NOT NULL,
+        to_addr TEXT NOT NULL,
+        ok INTEGER CHECK (ok IN (0, 1)),
+        outcome_unknown INTEGER NOT NULL DEFAULT 0 CHECK (outcome_unknown IN (0, 1)),
+        provider_id TEXT,
+        error TEXT,
+        log_id INTEGER REFERENCES send_log(id) ON DELETE SET NULL
+    );
+    CREATE INDEX test_sends_hash ON test_sends (content_hash, ok);
+    CREATE INDEX test_sends_sent_at ON test_sends (sent_at);
+    ALTER TABLE campaigns ADD COLUMN sender_address TEXT;
+    """,
 ]
 
 

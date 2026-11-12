@@ -302,8 +302,36 @@ def test_migrations_upgrade_v1_database(tmp_path: Path) -> None:
     database = db.Database(path)
     database.init()
     with database.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 4
         assert conn.execute("SELECT original_name FROM drafts").fetchone()[0] == "old.csv"
     compose.save_content(database, "c" * 32, GOOD)
     assert compose.get_content(database, "c" * 32) == GOOD
     database.init()  # idempotent
+
+
+def test_migration_4_keeps_send_log_ids(tmp_path: Path) -> None:
+    """Rebuilding send_log keeps its AUTOINCREMENT counter: ids of deleted rows aren't reused."""
+    path = tmp_path / "app.db"
+    conn = sqlite3.connect(path)
+    for number, sql in enumerate(db.MIGRATIONS[:3], start=1):
+        conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;")
+    for row_no in (1, 2, 3):
+        conn.execute(
+            "INSERT INTO send_log (campaign_id, row_no, started_at, outcome) "
+            "VALUES (1, ?, '2026-12-01T00:00:00+00:00', 'sent')",
+            (row_no,),
+        )
+    conn.execute("DELETE FROM send_log WHERE id = 3")  # e.g. an unmarked send at shutdown
+    conn.commit()
+    conn.close()
+
+    database = db.Database(path)
+    database.init()
+    with database.connect() as conn:
+        assert [r[0] for r in conn.execute("SELECT id FROM send_log ORDER BY id")] == [1, 2]
+        new_id = conn.execute(
+            "INSERT INTO send_log (started_at) VALUES ('2026-12-02T00:00:00+00:00')"
+        ).lastrowid
+        assert new_id == 4
+        names = [r[0] for r in conn.execute("SELECT name FROM sqlite_sequence")]
+        assert "send_log_new" not in names and names.count("send_log") == 1

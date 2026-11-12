@@ -9,7 +9,7 @@
   <ol class="steps">
     <li><strong>Connect your Outlook account</strong> on the <a href="/account">Account</a> page. You only do this
       once: you enter a short code at the Microsoft link the app shows.
-      <span class="muted" id="home-ms-status">{% if ms.state == "signed_in" %}Connected as {{ ms.sender.address }}.{% elif ms.state == "mock" %}Not needed in mock mode.{% elif ms.state == "signing_in" %}A sign-in is in progress.{% elif ms.state == "not_configured" %}MS_CLIENT_ID isn't set yet.{% else %}Not connected yet.{% endif %}</span></li>
+      <span class="muted" id="home-ms-status">{% if ms.state == "signed_in" and ms.reauth %}Reconnect needed: the sign-in for {{ ms.sender.address }} has expired or was revoked.{% elif ms.state == "signed_in" %}Connected as {{ ms.sender.address }}.{% elif ms.state == "mock" %}Not needed in mock mode.{% elif ms.state == "signing_in" %}A sign-in is in progress.{% elif ms.state == "not_configured" %}MS_CLIENT_ID isn't set yet.{% else %}Not connected yet.{% endif %}</span></li>
     <li><strong>Upload your CSV</strong> on <a href="/send/new">New send</a>. The first row must be the column
       names.</li>
     <li><strong>Pick the columns</strong>: the <em>Email</em> column and the <em>First name</em> column (both
@@ -20,8 +20,12 @@
     <li><strong>Fill in the footer</strong>: business name and postal address. The law for commercial email
       (CAN-SPAM) requires them, and the app adds the unsubscribe link itself.</li>
     <li><strong>Preview</strong> the email for any row of your list.</li>
-    <li><strong>Send a test to yourself</strong>. Sending to the list stays locked until a test of the current
-      version has gone out.</li>
+    <li><strong>Send a test to yourself</strong> with <em>Send test to me</em> on the compose page. It goes once to
+      your own Outlook address (in mock mode, to the outbox) with "[TEST]" before the subject, using the merge
+      fields of the recipient you pick; its unsubscribe link is for your address. Check how it looks in your mail
+      apps. <strong>Sending to the list stays locked until a test of the current version has gone out</strong>:
+      any edit after the test needs a new one. Tests are limited to one every 30 seconds and 20 a day, and count
+      toward the daily limit.</li>
     <li><strong>Start the send</strong>. You can pause, resume or cancel it, and it carries on after a restart.</li>
   </ol>
 </section>

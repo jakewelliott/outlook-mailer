@@ -176,9 +176,3 @@ def test_factory_mock(valid_env: dict[str, str], tmp_path: Path) -> None:
     assert isinstance(t, MockTransport) and t.name == "mock"
     assert t.outbox == tmp_path / "outbox"
     asyncio.run(t.aclose())
-
-
-def test_factory_graph_not_yet(valid_env: dict[str, str]) -> None:
-    s = load_settings({**valid_env, "MAIL_TRANSPORT": "graph", "MS_CLIENT_ID": "abc"})
-    with pytest.raises(NotImplementedError, match="stage 12"):
-        make_transport(s)

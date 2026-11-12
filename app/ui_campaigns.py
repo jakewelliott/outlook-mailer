@@ -107,6 +107,7 @@ class StartPlan:
     errors: list[str]
     used_today: int
     estimate: str
+    test: gate.GateStatus | None = None
 
 
 def _plan(request: Request, draft_id: str) -> StartPlan | Response:
@@ -118,6 +119,7 @@ def _plan(request: Request, draft_id: str) -> StartPlan | Response:
     errors: list[str] = []
     c = compose.get_content(db, draft.id)
     digest = ""
+    test = None
     if c is None:
         errors.append("Write and save the message first.")
     elif compose.validate(c):
@@ -132,7 +134,9 @@ def _plan(request: Request, draft_id: str) -> StartPlan | Response:
         )
         if size.too_large:
             errors.append(size.message() or "The email is too large.")
-        errors.extend(gate.check_can_start(s, draft.id, digest))
+        account = request.app.state.msauth.sender()
+        test = gate.status(db, s, account, draft.id, digest, _zone(request))
+        errors.extend(gate.check_can_start(s, db, draft.id, digest, sender=account))
     if not report.eligible:
         errors.append("Nobody on the list can be emailed.")
     existing = campaigns.campaign_for_draft(db, draft.id)
@@ -152,6 +156,7 @@ def _plan(request: Request, draft_id: str) -> StartPlan | Response:
         list(dict.fromkeys(errors)),
         used,
         estimate(len(report.eligible), s.send_rate_per_minute, s.daily_send_cap, used),
+        test,
     )
 
 
@@ -198,6 +203,9 @@ async def start(request: Request, draft_id: str) -> Response:
             "The message changed after this page was opened. Check the details and confirm again."
         )
         return await run_in_threadpool(_start_page, request, plan, 409)
+    # Graph: the address the passing test went to; the worker stops if another is connected.
+    tested = plan.test.test if plan.test is not None and plan.test.ok else None
+    graph = _settings(request).mail_transport == "graph"
     try:
         campaign_id = await run_in_threadpool(
             campaigns.create_campaign,
@@ -207,6 +215,7 @@ async def start(request: Request, draft_id: str) -> Response:
             plan.report.eligible,
             _now(request),
             transport=_settings(request).mail_transport,
+            sender_address=tested.to_addr if graph and tested is not None else None,
         )
     except CampaignError as exc:
         plan.errors.append(str(exc))
@@ -349,7 +358,11 @@ def _control(request: Request, campaign_id: str, action: str) -> Response:
         if action == "pause":
             campaigns.pause(db, c.id, now)
         elif action == "resume":
-            campaigns.resume(db, c.id, now, transport=_settings(request).mail_transport)
+            s = _settings(request)
+            problem, address = gate.resume_problem(db, s, c, request.app.state.msauth.sender())
+            if problem is not None:
+                raise CampaignError(problem)
+            campaigns.resume(db, c.id, now, transport=s.mail_transport, sender_address=address)
         else:
             campaigns.cancel(db, _settings(request).data_dir, c.id, now)
     except CampaignError as exc:

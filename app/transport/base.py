@@ -9,18 +9,22 @@ addressed to ``recipient``, checked before anything is sent). The engine treats 
 ``MessageError`` as permanent and **any other exception as outcome unknown** (it may have been
 raised after the request went out), never as retryable.
 
-How the Graph transport (stage 12) must map what happens to a result. The rule: retry only when
-the message certainly wasn't accepted; when in doubt, ``unknown`` (a double email can't be taken
-back, a missing one can be sent by hand after checking Sent Items).
+How the Graph transport maps what happens to a result (``app.transport.graph`` has the full
+table). The rule: retry only when the message certainly wasn't accepted; when in doubt,
+``unknown`` (a double email can't be taken back, a missing one can be sent by hand after
+checking Sent Items).
 
 - ``success``: 202 Accepted.
 - ``retry``: the connection couldn't be made or timed out *before the request was sent*
   (DNS, connect error, connect/pool timeout); 429 or 503, with ``retry_after`` from the
-  ``Retry-After`` header when there is one (seconds, or an HTTP date converted to seconds).
+  ``Retry-After`` header (seconds, or an HTTP date converted to seconds; 60 s when missing).
 - ``unknown``: read or write timeout once sending has started, the connection dropped before
   the whole response arrived, 500/502/504 (and any other 5xx) without a clear statement that
   the request was not processed.
-- ``auth``: 401, or the token can't be refreshed (``invalid_grant``, no account in the cache).
+- ``auth``: 401, or the token can't be refreshed (``invalid_grant``, no account in the cache),
+  and anything that says the *account* can't send (403, or Graph error codes such as
+  ``ErrorMessageSubmissionBlocked`` or ``ErrorAccessDenied``): every later message would fail
+  too, so the campaign stops until Jake fixes it.
 - ``permanent``: any other 4xx (the message itself was refused), e.g. 400 or 413.
 
 The Graph request timeout must stay below ``app.sender.SHUTDOWN_GRACE_SECONDS`` (15 s), which is
@@ -102,8 +106,14 @@ class Transport(ABC):
     name: str
 
     @abstractmethod
-    async def send(self, mime: bytes, *, recipient: str) -> SendResult:
-        """Send ``mime``, which must be addressed to ``recipient`` only."""
+    async def send(
+        self, mime: bytes, *, recipient: str, expected_sender: str | None = None
+    ) -> SendResult:
+        """Send ``mime``, which must be addressed to ``recipient`` only. ``expected_sender``: the
+        account the caller checked it may send from (Graph refuses if that changed since)."""
+
+    async def open(self) -> None:  # noqa: B027 (optional hook)
+        """Get ready to send (the app lifespan calls it at startup). Safe to call more than once."""
 
     async def aclose(self) -> None:  # noqa: B027 (optional hook; most transports hold nothing)
         """Release connections. Safe to call more than once."""
