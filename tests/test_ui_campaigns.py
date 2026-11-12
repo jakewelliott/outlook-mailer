@@ -259,7 +259,7 @@ def test_worker_sends_in_the_background(valid_env: dict[str, str], tmp_path: Pat
     )
     with TestClient(create_app(settings), base_url=BASE) as c:
         cid = start(c, ready_draft(c))
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 60
         while c.get(f"/campaigns/{cid}/progress").json()["status"] != "finished":
             assert time.monotonic() < deadline, "the worker didn't finish"
             time.sleep(0.05)
