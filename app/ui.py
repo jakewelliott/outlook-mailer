@@ -22,8 +22,15 @@ NAV = [
     ("/unsubscribes", "Unsubscribes"),
     ("/account", "Account"),
 ]
-# Pages with real routes elsewhere: "/" here, "/send/new" in ui_send, "/campaigns" in ui_campaigns.
-PLACEHOLDERS = {path: label for path, label in NAV if path not in ("/", "/send/new", "/campaigns")}
+# Pages with real routes elsewhere: "/" here, "/send/new" in ui_send, "/campaigns" in
+# ui_campaigns, "/account" in ui_account.
+REAL_PAGES = ("/", "/send/new", "/campaigns", "/account")
+PLACEHOLDERS = {path: label for path, label in NAV if path not in REAL_PAGES}
+
+
+def ms_indicator(request: Request) -> str:
+    """Microsoft sign-in state for the nav bar (never calls or waits for Microsoft)."""
+    return request.app.state.msauth.indicator()
 
 
 def _templates() -> Jinja2Templates:
@@ -34,7 +41,7 @@ def _templates() -> Jinja2Templates:
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    env.globals.update(csrf_field=csrf_field, nav=NAV)
+    env.globals.update(csrf_field=csrf_field, nav=NAV, ms_indicator=ms_indicator)
     return Jinja2Templates(env=env)
 
 
@@ -49,7 +56,9 @@ def _settings(request: Request) -> Settings:
 @router.get("/")
 def home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
-        request, "ui/home.html.j2", {"settings": _settings(request), "active": "/"}
+        request,
+        "ui/home.html.j2",
+        {"settings": _settings(request), "active": "/", "ms": request.app.state.msauth.status()},
     )
 
 

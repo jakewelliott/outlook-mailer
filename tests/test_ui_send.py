@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
+from app import ui
 from app.config import Settings, load_settings
 from app.main import create_app
 from app.ui_send import UploadTooLarge, limit_upload_size
@@ -338,3 +339,39 @@ def test_upload_size_guard_reads_only_ascii_digits(
             asyncio.run(limit_upload_size(request))
     else:
         asyncio.run(limit_upload_size(request))
+
+
+def test_pages_are_rendered_off_the_event_loop(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every page renders the nav's sign-in indicator; none may render on the event loop (the
+    POST routes here are ``async def``)."""
+    on_loop: list[str] = []
+    real = ui.templates.env.globals["ms_indicator"]
+
+    def indicator(request: Request) -> str:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass  # a worker thread: fine
+        else:
+            on_loop.append(f"{request.method} {request.url.path}")
+        return real(request)
+
+    monkeypatch.setitem(ui.templates.env.globals, "ms_indicator", indicator)
+    assert upload(client, b"").status_code == 400
+    assert upload(client, b"email\na@x.com\n", "photo.png", "image/png").status_code == 400
+    r = client.post(
+        "/send/new",
+        data={"csrf_token": token(client)},
+        files={"other": ("x.csv", b"", "text/csv")},
+        headers={"Origin": BASE},
+    )
+    assert r.status_code == 400
+    assert upload(client, b"email,first\n" + b"a@x.com,A\n" * 120_000).status_code == 413
+    draft = upload_ok(client)
+    fields = {"email": "Email Address", "first_name": "First Name"}
+    assert post_mapping(client, draft, {**fields, "action": "refresh"}).status_code == 200
+    assert post_mapping(client, draft, {"email": "", "status_shown": ""}).status_code == 400
+    assert post_mapping(client, "0" * 32, fields).status_code == 404
+    assert not on_loop

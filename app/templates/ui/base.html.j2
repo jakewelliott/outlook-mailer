@@ -14,7 +14,7 @@
       <nav aria-label="Main">
         <ul class="nav">
         {% for path, label in nav %}
-          <li><a href="{{ path }}"{% if path == active %} aria-current="page"{% endif %}>{{ label }}</a></li>
+          <li><a href="{{ path }}"{% if path == active %} aria-current="page"{% endif %}>{{ label }}{% if path == "/account" %}{% set ms_state = ms_indicator(request) %} <span class="ms-indicator ms-{{ ms_state | replace(" ", "-") }}" id="ms-indicator">{{ ms_state }}</span>{% endif %}</a></li>
         {% endfor %}
         </ul>
       </nav>

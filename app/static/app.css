@@ -118,3 +118,10 @@ details summary { cursor: pointer; color: var(--red); font-weight: 600; margin-t
 ol.events { padding-left: 1.2rem; margin: 0; }
 ol.events li { margin-bottom: 0.3rem; }
 .status-line { font-size: 1.1rem; }
+
+/* Account page and the sign-in indicator in the nav */
+.user-code-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.5rem 0; }
+.user-code { font-size: 2rem; font-weight: 700; letter-spacing: 0.12em; padding: 0.3rem 0.8rem; user-select: all; }
+.ms-indicator { font-size: 0.75rem; font-weight: 600; padding: 0.05rem 0.4rem; border-radius: 999px; background: rgba(255, 255, 255, 0.2); }
+.ms-indicator.ms-connected { background: #e9f4ec; color: var(--pine); }
+.ms-indicator.ms-not-connected, .ms-indicator.ms-reconnect-needed { background: var(--gold); color: var(--ink); }

@@ -5,6 +5,7 @@ importing this module (e.g. in tests) does not read the environment. If the envi
 invalid, accessing ``app`` prints each problem and exits, so the server refuses to start.
 """
 
+import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator
@@ -17,10 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from starlette.types import Scope
 
-from app import campaigns, render, ui, ui_campaigns, ui_compose, ui_send
+from app import campaigns, render, ui, ui_account, ui_campaigns, ui_compose, ui_send
 from app.auth import AccessVerifier
 from app.config import ConfigError, Settings, load_settings
 from app.db import Database
+from app.msauth import MicrosoftAuth
 from app.security import CsrfSigner, Forbidden, RequestGuard, forbidden_response
 from app.sender import Clock, SendWorker, utcnow
 from app.transport import Transport, make_transport
@@ -68,6 +70,10 @@ def create_app(
         settings = load_settings()
 
     logging.basicConfig(level=settings.log_level)
+    # MSAL's debug output includes request details; keep it quiet even with LOG_LEVEL=DEBUG.
+    logging.getLogger("msal").setLevel(
+        max(logging.WARNING, logging.getLevelName(settings.log_level))
+    )
     if settings.auth_disabled:
         log.warning(
             "AUTH_DISABLED=1: admin pages are NOT protected by Cloudflare Access. "
@@ -82,10 +88,12 @@ def create_app(
         except NotImplementedError as exc:
             log.warning("No send worker: %s", exc)
     worker = SendWorker(db, settings, transport, clock=clock) if transport is not None else None
+    msauth = MicrosoftAuth(settings, db)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db.init()  # create the schema at startup so a bad DATA_DIR fails early
+        msauth.load()  # local files only; nothing is sent to Microsoft at startup
         now = clock()
         interrupted = campaigns.recover_interrupted(db, now)
         if interrupted:
@@ -101,6 +109,8 @@ def create_app(
         try:
             yield
         finally:
+            # Joins the sign-in thread (up to 3 s): keep it off the event loop.
+            await asyncio.to_thread(msauth.shutdown)
             if worker is not None:
                 await worker.stop()
             if transport is not None:
@@ -114,6 +124,7 @@ def create_app(
     app.state.db = db
     app.state.clock = clock
     app.state.worker = worker
+    app.state.msauth = msauth
     app.state.csrf_signer = CsrfSigner(settings.unsubscribe_secret)
     app.add_middleware(RequestGuard, settings=settings, verifier=verifier)
     app.add_exception_handler(Forbidden, forbidden_response)
@@ -129,6 +140,7 @@ def create_app(
     app.include_router(ui_send.router)
     app.include_router(ui_compose.router)
     app.include_router(ui_campaigns.router)
+    app.include_router(ui_account.router)
     # Admin-only: the guard protects everything outside the public paths.
     app.mount("/static", StaticFiles(directory=ui.STATIC_DIR), name="static")
     # Public: images linked from sent emails (the guard treats /img/* as public).

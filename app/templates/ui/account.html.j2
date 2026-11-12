@@ -1,0 +1,83 @@
+{% extends "ui/base.html.j2" %}
+{% set title = "Account" %}
+{% block content %}
+<h1>Microsoft account</h1>
+<p>The app sends from your Outlook.com account through Microsoft Graph. You connect it once here by entering a
+  short code at a Microsoft page; the app never sees your password.</p>
+
+{% if s.notice %}<p class="ok" role="status" id="account-notice">{{ s.notice }}</p>{% endif %}
+{% if s.error %}<div class="error" role="alert" id="account-error"><p>{{ s.error }}</p>
+  <p>See <a href="{{ troubleshooting_url }}" target="_blank" rel="noopener noreferrer">Troubleshooting in docs/entra-setup.md</a>.</p></div>{% endif %}
+
+<section class="card" id="account-state" data-state="{{ s.state }}" data-url="/account/status"
+  data-poll="{{ poll_seconds }}"{% if s.seconds_left is not none %} data-seconds-left="{{ s.seconds_left }}"{% endif %}>
+{% if s.state == "mock" %}
+  <h2>Not needed in mock mode</h2>
+  <p id="account-mock">The app runs with <code>MAIL_TRANSPORT=mock</code>: messages are written as <code>.eml</code>
+    files and nothing is sent, so no Microsoft sign-in is needed and the app doesn't contact Microsoft. Set
+    <code>MAIL_TRANSPORT=graph</code> and <code>MS_CLIENT_ID</code> to send for real.</p>
+{% elif s.state == "not_configured" %}
+  <h2>Not configured</h2>
+  <p id="account-not-configured"><code>MS_CLIENT_ID</code> isn't set. Register the app as described in
+    <code>docs/entra-setup.md</code>, set <code>MS_CLIENT_ID</code> to its Application (client) ID and restart the
+    container.</p>
+{% elif s.state == "signing_in" %}
+  <h2>Signing in</h2>
+  <ol class="steps">
+    <li>Open
+    {% if s.link_ok %}
+      <a href="{{ s.code.verification_uri }}" target="_blank" rel="noopener noreferrer" id="verification-uri">{{ s.code.verification_uri }}</a>
+    {% else %}
+      <strong id="verification-uri">{{ s.code.verification_uri }}</strong>
+    {% endif %}
+      on any device (it opens in a new tab).</li>
+    <li>Enter this code:
+      <p class="user-code-row"><code class="user-code" id="user-code">{{ s.code.user_code }}</code>
+        <button type="button" class="secondary" id="copy-code" data-copy="user-code" hidden>Copy</button></p></li>
+    <li>Sign in with your @outlook.com account and select <strong>Accept</strong> on the permissions page
+      (send mail as you, read your profile, keep access).</li>
+  </ol>
+  <p>The code expires in <strong id="time-left">{{ left }}</strong> (minutes:seconds). This page shows the
+    connected address once you're done.</p>
+  <p class="muted"><a href="/account">Refresh</a><span id="account-live" hidden> · updates automatically</span></p>
+  <form method="post" action="/account/cancel">{{ csrf_field(request) }}<button type="submit" class="secondary" id="cancel-sign-in">Cancel</button></form>
+{% elif s.state == "signed_in" %}
+  <h2>Connected</h2>
+  <p id="account-sender">Sending as <strong>{{ s.sender.address }}</strong>{% if s.sender.name %} ({{ s.sender.name }}){% endif %}.</p>
+  {% if s.error %}
+  <form method="post" action="/account/connect">{{ csrf_field(request) }}<button type="submit" id="connect">Connect again</button></form>
+  {% endif %}
+  <details>
+    <summary>Sign out…</summary>
+    <p>This deletes the saved Microsoft sign-in from the app. Sending stays locked until you connect again.</p>
+    <form method="post" action="/account/sign-out">{{ csrf_field(request) }}<button type="submit" class="danger" id="sign-out">Yes, sign out</button></form>
+  </details>
+{% else %}
+  <h2>Not connected</h2>
+  <p>Select the button, then enter the code the app shows at the Microsoft link. Have your Outlook password and
+    phone (two-step verification) ready.</p>
+  <form method="post" action="/account/connect">{{ csrf_field(request) }}<button type="submit" id="connect">Connect Outlook account</button></form>
+{% endif %}
+</section>
+
+{% if s.cache_plaintext and s.state not in ("mock", "not_configured") %}
+<p class="warn-box" id="cache-plaintext"><code>TOKEN_CACHE_KEY</code> isn't set, so the saved sign-in is stored
+  unencrypted in <code>DATA_DIR/msal_cache.json</code> (readable only by the app). Setting a key is recommended:
+  generate one with <code>python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>,
+  set it and restart the container; the saved sign-in is then encrypted.</p>
+{% endif %}
+
+{% if s.state not in ("mock", "not_configured") %}
+<section class="card">
+  <h2>Good to know</h2>
+  <ul>
+    <li>The app renews its access by itself. You only connect again after changing your Outlook password,
+      removing the app's access, or about 90 days without using the app.</li>
+    <li>To remove the app's access from your Microsoft account, open
+      <a href="https://account.live.com/consent/Manage" target="_blank" rel="noopener noreferrer">account.live.com/consent/Manage</a>,
+      find <strong>outlook-mailer</strong> and remove its permissions. Signing out here only deletes the copy the
+      app keeps.</li>
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

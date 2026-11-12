@@ -164,18 +164,22 @@ def _looks_like_csv(upload: UploadFile) -> bool:
 
 @upload_router.post("/send/new")
 async def upload(request: Request) -> Response:
+    # Pages are rendered in a thread (run_in_threadpool), never on the event loop.
     upload = (await request.form()).get(UPLOAD_FIELD)
     if not isinstance(upload, UploadFile) or not upload.filename:
-        return _upload_page(request, "Choose a CSV file to upload.", 400)
+        return await run_in_threadpool(_upload_page, request, "Choose a CSV file to upload.", 400)
     if not _looks_like_csv(upload):
-        return _upload_page(
-            request, "That doesn't look like a CSV file. In Excel use Save As, then CSV.", 400
+        return await run_in_threadpool(
+            _upload_page,
+            request,
+            "That doesn't look like a CSV file. In Excel use Save As, then CSV.",
+            400,
         )
     data = await upload.read(_limit_bytes(request) + 1)
     try:
         await run_in_threadpool(_parse, request, data)
     except CsvError as exc:
-        return _upload_page(request, str(exc), 400)
+        return await run_in_threadpool(_upload_page, request, str(exc), 400)
     draft = await run_in_threadpool(
         drafts.create_draft, _db(request), _settings(request).data_dir, upload.filename, data
     )
@@ -248,7 +252,12 @@ def _field(form: FormData, name: str) -> str | None:
 @router.post("/send/{draft_id}/mapping")
 async def mapping_save(request: Request, draft_id: str) -> Response:
     form = await request.form()
-    loaded = await run_in_threadpool(_load, request, draft_id)
+    # Loading, checking, rendering and saving all run in a thread, off the event loop.
+    return await run_in_threadpool(_mapping_submit, request, draft_id, form)
+
+
+def _mapping_submit(request: Request, draft_id: str, form: FormData) -> Response:
+    loaded = _load(request, draft_id)
     if isinstance(loaded, Response):
         return loaded
     draft, parsed = loaded
@@ -277,7 +286,7 @@ async def mapping_save(request: Request, draft_id: str) -> Response:
         if not selection:
             error = "Tick at least one status value, or set the status column to none."
             return _mapping_page(request, draft, parsed, chosen, picked, [error], 400)
-    await run_in_threadpool(drafts.save_mapping, _db(request), draft.id, mapping, selection)
+    drafts.save_mapping(_db(request), draft.id, mapping, selection)
     return RedirectResponse(f"/send/{draft.id}/report", status_code=303)
 
 

@@ -8,7 +8,8 @@
   <h2>Steps</h2>
   <ol class="steps">
     <li><strong>Connect your Outlook account</strong> on the <a href="/account">Account</a> page. You only do this
-      once: you enter a short code at the Microsoft link the app shows.</li>
+      once: you enter a short code at the Microsoft link the app shows.
+      <span class="muted" id="home-ms-status">{% if ms.state == "signed_in" %}Connected as {{ ms.sender.address }}.{% elif ms.state == "mock" %}Not needed in mock mode.{% elif ms.state == "signing_in" %}A sign-in is in progress.{% elif ms.state == "not_configured" %}MS_CLIENT_ID isn't set yet.{% else %}Not connected yet.{% endif %}</span></li>
     <li><strong>Upload your CSV</strong> on <a href="/send/new">New send</a>. The first row must be the column
       names.</li>
     <li><strong>Pick the columns</strong>: the <em>Email</em> column and the <em>First name</em> column (both

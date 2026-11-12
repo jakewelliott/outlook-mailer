@@ -422,7 +422,7 @@ def test_help_page_has_no_inline_script_or_style(settings: Settings) -> None:
     assert 'href="/static/app.css"' in html and 'src="/static/app.js"' in html
 
 
-@pytest.mark.parametrize("path", ["/unsubscribes", "/account"])
+@pytest.mark.parametrize("path", ["/unsubscribes"])
 def test_placeholder_pages(settings: Settings, path: str) -> None:
     r = TestClient(create_app(settings)).get(path)
     assert r.status_code == 200

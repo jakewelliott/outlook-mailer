@@ -10,7 +10,8 @@ with a CAN-SPAM footer and a one-click unsubscribe link). It runs as a single Do
 > merge fields, the Markdown-to-email conversion of the message body, the Christmas email template with its
 > footer and hosted images, the compose page with saved footer settings and a light/dark preview, the
 > MIME message builder with the mock transport, and the send engine with its progress page,
-> pause/resume/cancel and results download. Microsoft sign-in and the Graph transport come next.
+> pause/resume/cancel and results download, and the Microsoft sign-in (device code) with its Account page.
+> The Graph transport and the test-send gate come next.
 > See [docs/PLAN.md](docs/PLAN.md) for the build plan.
 
 ## Overview
@@ -95,6 +96,31 @@ can show their own unsubscribe button. A header value containing a line break or
 Microsoft Graph gets the message base64-encoded. With `MAIL_TRANSPORT=mock` nothing is sent: each message is written
 to `DATA_DIR/outbox/<time>-<n>-<recipient>.eml` (readable only by the app), which opens in any mail app, and the
 `From` is the placeholder `sender@example.invalid`.
+
+### Microsoft sign-in
+
+Real sending needs the Outlook.com account connected once, on the **Account** page (first set up the app
+registration in [docs/entra-setup.md](docs/entra-setup.md) and set `MS_CLIENT_ID`). **Connect Outlook account**
+shows a short code and the link Microsoft returns (normally `https://www.microsoft.com/link` for personal
+accounts; the app shows whatever Microsoft sends, never a fixed address). Open the link on any device, enter the
+code within 15 minutes, sign in with the @outlook.com account and select **Accept**. The page updates by itself
+(or use **Refresh**) and then shows *Sending as you@outlook.com (Your Name)*; that address is the `From` of every
+email. Only one sign-in runs at a time and it can be cancelled; reconnecting and then cancelling keeps the
+existing sign-in. Work or school accounts are refused. The menu shows whether the account is connected (or needs connecting again).
+
+The app asks for `Mail.Send` and `User.Read` (MSAL adds `offline_access`, which lets it renew access by itself).
+The saved sign-in (MSAL's token cache) is `DATA_DIR/msal_cache.json`, readable only by the app (mode 0600) and
+replaced atomically. With `TOKEN_CACHE_KEY` set it is encrypted (Fernet); without it the file is plain JSON and the
+Account page recommends setting a key. Setting a key later encrypts the existing file at the next start. If the key
+changes or is removed, the saved sign-in can't be read: the page says so and the account has to be connected again
+(nothing crashes; putting the old key back also works). Tokens and codes are never logged.
+
+You only reconnect after changing the Outlook password, removing the app's access, or about 90 days without use;
+errors from Microsoft are shown in plain words with the code (e.g. `AADSTS7000218` = public client flows not
+turned on) and a link to the troubleshooting table in [docs/entra-setup.md](docs/entra-setup.md#troubleshooting).
+**Sign out** deletes the saved sign-in and the stored address. To withdraw the app's access on Microsoft's side,
+use [account.live.com/consent/Manage](https://account.live.com/consent/Manage). With `MAIL_TRANSPORT=mock` no
+sign-in is needed and the app never contacts Microsoft.
 
 ### Sending
 

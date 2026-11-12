@@ -99,4 +99,55 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     timer = setInterval(poll, seconds * 1000);
   }
+
+  // Account page while signing in: count the code's time down, poll the status JSON and reload
+  // when the state changes (connected, failed, expired). Without JS: the Refresh link.
+  const account = document.getElementById("account-state");
+  if (account && account.dataset.state === "signing_in") {
+    const seconds = Number(account.dataset.poll) || 3;
+    const live = document.getElementById("account-live");
+    if (live) live.hidden = false;
+    const left = document.getElementById("time-left");
+    let remaining = Number(account.dataset.secondsLeft) || 0;
+    const countdown = setInterval(() => {
+      remaining = Math.max(0, remaining - 1);
+      if (left) left.textContent = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
+    }, 1000);
+    const timer = setInterval(async () => {
+      try {
+        const response = await fetch(account.dataset.url, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (data.state !== account.dataset.state) {
+          clearInterval(timer);
+          clearInterval(countdown);
+          location.reload();
+          return;
+        }
+        if (typeof data.seconds_left === "number") remaining = data.seconds_left;
+      } catch (err) {
+        clearInterval(timer);
+        if (live) live.textContent = " · live updates stopped; use Refresh";
+      }
+    }, seconds * 1000);
+  }
+
+  // Copy buttons (the device code). Shown only when the clipboard API is available.
+  for (const button of document.querySelectorAll("button[data-copy]")) {
+    const source = document.getElementById(button.dataset.copy);
+    if (!source || !navigator.clipboard) continue;
+    button.hidden = false;
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(source.textContent.trim());
+        button.textContent = "Copied";
+      } catch (err) {
+        button.textContent = "Copy failed: select the code";
+      }
+    });
+  }
 });
