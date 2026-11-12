@@ -160,7 +160,7 @@
     {% elif test_result.ok is none %}
   <p class="warn-box" role="alert" id="test-result">The test send to {{ test_result.to_addr }} at {{ test_result_at }} didn't finish.</p>
     {% elif test_result.outcome_unknown %}
-  <p class="warn-box" role="alert" id="test-result">Not sure whether the test to {{ test_result.to_addr }} at {{ test_result_at }} went out ({{ test_result.error }}). Check your inbox and Sent Items. It doesn't unlock sending to the list: send another test.</p>
+  <p class="warn-box" role="alert" id="test-result">Not sure whether the test to {{ test_result.to_addr }} at {{ test_result_at }} went out ({{ test_result.reason }}). Check your inbox and Sent Items.{% if test_result.advice %} {{ test_result.advice }}{% endif %} It doesn't unlock sending to the list: send another test.</p>
     {% else %}
   <div class="error" role="alert" id="test-result"><p>The test wasn't sent: {{ test_result.error }}</p></div>
     {% endif %}

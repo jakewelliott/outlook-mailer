@@ -77,7 +77,37 @@ class SentTest:
     ok: bool | None  # None: in flight, or interrupted (not a success)
     outcome_unknown: bool  # ok is False, but it may have gone out
     provider_id: str | None
+    # An unknown outcome with account advice stores "<reason>\n<advice>" (``_finish``).
     error: str | None
+
+    @property
+    def reason(self) -> str | None:
+        """``error`` without the account advice."""
+        return None if self.error is None else self.error.split("\n", 1)[0]
+
+    @property
+    def advice(self) -> str | None:
+        """What to do about the account (an unknown outcome with a ``stop_reason``), if any."""
+        parts = (self.error or "").split("\n", 1)
+        return parts[1] if len(parts) == 2 else None
+
+
+# Campaign-only wording in the account messages (``graph.ACCOUNT_CODES``) and what a test says.
+_TEST_WORDING = (
+    ("wait before resuming;", "wait a while before sending another test;"),
+    (", then resume.", ", then send another test."),
+    (" and resume.", " and send another test."),
+)
+
+
+def account_advice_for_test(reason: str, stop_reason: str) -> str:
+    """A campaign stop message (``SendResult.stop_reason``) as advice after a test send: without
+    the status ``reason`` already shows, and "send another test" where it says "resume"."""
+    detail = reason.removeprefix("Microsoft answered ")
+    advice = stop_reason.replace(f" ({detail})", "", 1)
+    for campaign, test in _TEST_WORDING:
+        advice = advice.replace(campaign, test)
+    return advice
 
 
 class CantSendTest(Exception):
@@ -319,10 +349,10 @@ def _reserve(
 def _finish(db: Database, test_id: int, log_id: int, result: SendResult, now: datetime) -> None:
     outcome = "sent" if result.ok else None if result.outcome_unknown else "failed"
     error = result.error
-    if result.stop_reason:
+    if result.stop_reason and error:
         # Unknown, but the account is in trouble (e.g. a Graph 500 saying it is blocked): show
         # what to do about the account too. It stays unknown, so the gate stays locked.
-        error = f"{error}. {result.stop_reason}"
+        error = f"{error}\n{account_advice_for_test(error, result.stop_reason)}"
     with db.connect() as conn:
         conn.execute("UPDATE send_log SET outcome = ? WHERE id = ?", (outcome, log_id))
         conn.execute(

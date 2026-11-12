@@ -22,7 +22,7 @@ from app.db import Database
 from app.main import create_app
 from app.msauth import Sender
 from app.transport import SendResult, make_transport
-from app.transport.graph import SEND_MAIL_URL
+from app.transport.graph import ACCOUNT_CODES, SEND_MAIL_URL
 from app.unsubscribe_tokens import verify_token
 from tests.test_graph import GRAPH_ENV, ME, FakeAuth
 from tests.test_sender import CONTENT, T0, FakeClock
@@ -256,26 +256,48 @@ def test_unknown_with_stop_reason_shows_account_advice(
     client: TestClient, clock: FakeClock
 ) -> None:
     # Fix A1: a Graph 5xx with an account-level code is unknown with a stop_reason; the test
-    # result must say what to do about the account, and the gate stays locked.
+    # result must say what to do about the account, and the gate stays locked. The advice comes
+    # after the status (shown once), worded for a test, not a campaign resume.
     draft = make_draft(client)
     save(client, draft)
-    advice = "Microsoft is blocking this Outlook account from sending (HTTP 500 Blocked)."
+    code = "HTTP 500 ErrorMessageSubmissionBlocked"
+    stop_reason = ACCOUNT_CODES["ErrorMessageSubmissionBlocked"].format(code=code)
     transport = client.app.state.transport  # type: ignore[attr-defined]
     transport.decide = lambda r, n: SendResult.unknown(
-        "Microsoft answered HTTP 500 Blocked", stop_reason=advice
+        f"Microsoft answered {code}", stop_reason=stop_reason
     )
     r = click_test(client, draft)
     assert r.status_code == 303
     page = compose_page(client, draft, "?" + r.headers["location"].split("?", 1)[1].split("#")[0])
-    assert "Not sure whether the test to you@example.com" in page
-    assert "Microsoft answered HTTP 500 Blocked" in page and advice in page
+    m = re.search(r'<p class="warn-box" role="alert" id="test-result">(.*?)</p>', page, re.S)
+    assert m is not None
+    assert m.group(1) == (
+        "Not sure whether the test to you@example.com at 2026-12-01 10:00:00 EST went out "
+        "(Microsoft answered "
+        "HTTP 500 ErrorMessageSubmissionBlocked). Check your inbox and Sent Items. Microsoft is "
+        "blocking this Outlook account from sending. This usually follows 'unusual activity': "
+        "sign in at outlook.com, complete any verification it asks for and wait a while before "
+        "sending another test; check that ordinary emails from outlook.com go out. It doesn't "
+        "unlock sending to the list: send another test."
+    )
+    assert m.group(1).count(code) == 1 and ".)." not in m.group(1)
+    assert "resum" not in m.group(1).lower()
     assert "Send a test to yourself first" in page  # the gate stays locked
     assert 'id="start-send"' not in start_page(client, draft)
     t = gate.latest_for_draft(db_of(client), draft)
     assert t is not None and t.ok is False and t.outcome_unknown
-    assert t.error == f"Microsoft answered HTTP 500 Blocked. {advice}"
+    assert t.reason == f"Microsoft answered {code}"
+    assert t.advice is not None and t.advice.startswith("Microsoft is blocking")
     with db_of(client).connect() as conn:
         assert conn.execute("SELECT outcome FROM send_log").fetchone()[0] is None
+
+
+@pytest.mark.parametrize("message", sorted(set(ACCOUNT_CODES.values())))
+def test_account_advice_for_test_drops_code_and_resume(message: str) -> None:
+    advice = gate.account_advice_for_test(
+        "Microsoft answered HTTP 500 X", message.format(code="HTTP 500 X")
+    )
+    assert "HTTP 500" not in advice and "resum" not in advice.lower() and "()" not in advice
 
 
 def test_needs_saved_content_and_csrf(client: TestClient, tmp_path: Path) -> None:
