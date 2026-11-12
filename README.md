@@ -585,8 +585,9 @@ A background worker in the app sends one email at a time:
 - **Retries**: only a failure where the email certainly wasn't accepted is retried: Microsoft couldn't be
   reached, the connection timed out before the email was sent, or the sign-in couldn't be renewed just then. It is
   retried after 30 seconds, 2 minutes and 10 minutes, 3 attempts in all; then it is marked failed. A 429/503 (busy)
-  answer is throttling (below). A permanent rejection (another 4xx answer) is not retried. Other people are sent
-  to while one waits for a retry.
+  answer is throttling (below). A permanent rejection (another 4xx answer) is not retried, and neither is a
+  500/502/504 server error, whatever it says (see Exactly once). Other people are sent to while one waits for a
+  retry.
 - **Throttling**: when Microsoft answers 429/503 and says how long to wait (`Retry-After`, 60 s if it doesn't),
   **nothing is sent to anyone** before that time, even after a restart; the send's page shows the time. Being
   asked to wait isn't counted as a failure or as one of the person's 3 attempts, but if it happens 10 times in a
@@ -594,8 +595,11 @@ A background worker in the app sends one email at a time:
 - **Stops**: the send stops (*Stopped by an error*) with the reason if no account is connected, a different
   account is connected than the one the send was tested with, the Microsoft sign-in has expired or been revoked,
   Microsoft says the account can't send (blocked, no permission, limit reached), 5 attempts in a row fail, or
-  Microsoft keeps throttling. Fix the cause (reconnect on the Account page, or sign in at outlook.com and clear
-  the block) and press **Resume**. A send you paused stays paused; the reason is shown and logged.
+  Microsoft keeps throttling. If Microsoft says the account can't send but answers with a server error
+  (500/502/504), the email it was sending may or may not have gone out: that person is marked failed with
+  "check Sent Items" and is not sent again on resume (see Exactly once). Fix the cause (reconnect on the Account
+  page, or sign in at outlook.com and clear the block) and press **Resume**. A send you paused stays paused; the
+  reason is shown and logged.
 - **Exactly once**: each person is marked "sending" in the database before the email is handed to the transport,
   and the result is recorded straight after (retried a few times if the database is busy; nothing else is sent
   until it is saved; after 10 failed tries the send stops, and after a restart that person is reported as
@@ -603,7 +607,9 @@ A background worker in the app sends one email at a time:
   been delivered; check Sent Items" and is **not** resent automatically (a double email can't be taken back; check
   Sent Items and send it yourself if needed). That happens when the app is stopped or crashes mid-send ("interrupted
   during send — ..."), and when the connection fails after the email was handed over: a timeout waiting for
-  Microsoft's answer, the connection dropping mid-answer, or a 500/502/504 server error ("outcome unknown — ...").
+  Microsoft's answer, the connection dropping mid-answer, or a 500/502/504 server error ("outcome unknown — ..."),
+  even when that error also says the account can't send (the send then stops as well). Only a refusal (a 4xx
+  answer, or 429/503 busy) is taken as proof that nothing went out.
   These count against the daily limit and as failed attempts. On a normal shutdown the worker waits up to 15 s for
   an in-flight email to finish first (see [Stopping and restarting safely](#stopping-and-restarting-safely)).
   Everything else carries on after a restart.

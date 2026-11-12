@@ -19,12 +19,15 @@ checking Sent Items).
   (DNS, connect error, connect/pool timeout); 429 or 503, with ``retry_after`` from the
   ``Retry-After`` header (seconds, or an HTTP date converted to seconds; 60 s when missing).
 - ``unknown``: read or write timeout once sending has started, the connection dropped before
-  the whole response arrived, 500/502/504 (and any other 5xx) without a clear statement that
-  the request was not processed.
+  the whole response arrived, 500/502/504 (and any other 5xx but 503/509), whatever error code
+  the body carries. When that code is an account-level one, the result also carries a
+  ``stop_reason``: the recipient is reported unknown (never resent) *and* the campaign stops.
 - ``auth``: 401, or the token can't be refreshed (``invalid_grant``, no account in the cache),
-  and anything that says the *account* can't send (403, or Graph error codes such as
-  ``ErrorMessageSubmissionBlocked`` or ``ErrorAccessDenied``): every later message would fail
-  too, so the campaign stops until Jake fixes it.
+  and a refusal that says the *account* can't send (403, or a 4xx/429/503/509 carrying a Graph
+  error code such as ``ErrorMessageSubmissionBlocked`` or ``ErrorAccessDenied``): every later
+  message would fail too, so the campaign stops until Jake fixes it, and the recipient is tried
+  again on resume. Only answers that say the request was refused can be ``auth``, since the
+  recipient is resent.
 - ``permanent``: any other 4xx (the message itself was refused), e.g. 400 or 413.
 
 The Graph request timeout must stay below ``app.sender.SHUTDOWN_GRACE_SECONDS`` (15 s), which is
@@ -46,9 +49,12 @@ class SendResult:
       anyone before then. Without it the engine uses its own backoff for this recipient.
     - ``outcome_unknown`` (``SendResult.unknown``): it may or may not have been sent (e.g. a
       timeout after the request went out). Never retried; the recipient is reported failed with
-      "check Sent Items", and the send still counts against the daily cap.
-    - ``auth_error``: the sign-in is missing, expired or revoked. Not retryable: the engine stops
-      the campaign until Jake signs in again.
+      "check Sent Items", and the send still counts against the daily cap. With ``stop_reason``
+      (only allowed here) the engine also stops the campaign for that reason, e.g. a 500 that
+      says the account is blocked: later messages would fail too, but this one may have gone.
+    - ``auth_error``: the sign-in is missing, expired or revoked, or the account was refused
+      before anything was sent. Not retryable: the engine stops the campaign until Jake fixes it,
+      and the recipient is sent on resume.
     - otherwise a permanent failure for this recipient (e.g. Graph rejects the message).
 
     At most one of ``retryable``, ``outcome_unknown`` and ``auth_error`` is set on a failure.
@@ -61,6 +67,7 @@ class SendResult:
     provider_id: str | None = None
     auth_error: bool = False
     outcome_unknown: bool = False
+    stop_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.ok and (
@@ -73,6 +80,8 @@ class SendResult:
             raise ValueError("a result is at most one of retryable, unknown and auth error")
         if self.retry_after is not None and (not self.retryable or self.retry_after < 0):
             raise ValueError("retry_after is a non-negative delay for retryable failures only")
+        if self.stop_reason is not None and (not self.outcome_unknown or not self.stop_reason):
+            raise ValueError("stop_reason is a non-empty reason for unknown outcomes only")
 
     @property
     def throttled(self) -> bool:
@@ -88,8 +97,8 @@ class SendResult:
         return cls(ok=False, retryable=True, retry_after=retry_after, error=error)
 
     @classmethod
-    def unknown(cls, error: str) -> "SendResult":
-        return cls(ok=False, outcome_unknown=True, error=error)
+    def unknown(cls, error: str, stop_reason: str | None = None) -> "SendResult":
+        return cls(ok=False, outcome_unknown=True, error=error, stop_reason=stop_reason)
 
     @classmethod
     def permanent(cls, error: str) -> "SendResult":

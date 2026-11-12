@@ -58,7 +58,9 @@ Outcomes (see ``app.transport.base`` for how a transport chooses them):
 - retryable without ``Retry-After`` -> retried after 30 s, 2 min, then 10 min, at most
   ``MAX_ATTEMPTS`` attempts, then ``failed``. Other recipients go meanwhile.
 - outcome unknown -> ``failed`` ("may or may not have been delivered; check Sent Items"), never
-  retried; its ``send_log`` outcome stays NULL so it counts against the daily cap.
+  retried; its ``send_log`` outcome stays NULL so it counts against the daily cap. With a
+  ``stop_reason`` (e.g. a Graph 500 saying the account is blocked) the campaign is also
+  ``stopped_error`` for that reason; the recipient stays ``failed``, so resuming doesn't resend.
 - permanent -> ``failed``.
 - auth error -> the recipient goes back to ``pending`` (the attempt isn't counted) and the
   campaign is ``stopped_error`` until Jake reconnects (or unblocks) the account and resumes.
@@ -781,6 +783,19 @@ class SendWorker:
                 error = f"outcome unknown ({error}) — {campaigns.UNKNOWN_SUFFIX}"
                 recipient(status=campaigns.R_FAILED, last_error=error, next_attempt_at=None)
                 add_event(conn, c.id, now, f"{who}: {error}. Not retried.")
+                if result.stop_reason:
+                    # The account is in trouble, but this message may have gone out: the
+                    # recipient stays failed (not resent on resume) and the campaign stops.
+                    self._stop(
+                        conn,
+                        c.id,
+                        status,
+                        now,
+                        f"{AUTH_STOP_MESSAGE} {result.stop_reason} {who} may or may not have "
+                        "received the email and won't be sent it again; check Sent Items. "
+                        f"{AUTH_STOP_AFTER}",
+                    )
+                    return
             elif result.retryable and attempts < MAX_ATTEMPTS:
                 retry_at = now + timedelta(seconds=BACKOFF_SECONDS[attempts - 1])
                 recipient(

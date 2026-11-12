@@ -391,6 +391,11 @@ def test_expected_sender_checked_with_the_token(auth: FakeAuth, graph: respx.Rou
         (error(404, "MailboxNotEnabledForRESTAPI"), "auth", "no mailbox"),
         (error(400, "ErrorMessageSubmissionBlocked"), "auth", "blocking"),
         (error(429, "ErrorExceededMessageLimit"), "auth", "limit"),
+        (error(503, "ErrorExceededMessageLimit"), "auth", "limit"),
+        (error(509, "ErrorQuotaExceeded"), "auth", "limit"),
+        (error(500, "ErrorMessageSubmissionBlocked"), "unknown", "HTTP 500"),
+        (error(502, "ErrorAccessDenied"), "unknown", "HTTP 502"),
+        (error(504, "ErrorQuotaExceeded"), "unknown", "HTTP 504"),
         (error(400, "ErrorMimeContentInvalidBase64String"), "permanent", "InvalidBase64"),
         (error(400, "ErrorInvalidRecipients"), "permanent", "ErrorInvalidRecipients"),
         (httpx.Response(413), "permanent", "HTTP 413"),
@@ -436,6 +441,50 @@ def test_401_marks_reconnect_needed(auth: FakeAuth, graph: respx.Route) -> None:
     graph.mock(return_value=httpx.Response(202))
     assert send(transport(auth)).ok
     assert auth.accepted == 1 and auth.rejected == 0  # an accepted send clears it
+
+
+@pytest.mark.parametrize("status", [500, 502, 504, 507, 302])
+@pytest.mark.parametrize(
+    ("code", "fragment"),
+    [
+        ("ErrorMessageSubmissionBlocked", "blocking this Outlook account"),
+        ("ErrorAccessDenied", "Mail.Send"),
+        ("ErrorQuotaExceeded", "limit"),
+        ("MailboxNotEnabledForRESTAPI", "no mailbox"),
+    ],
+)
+def test_server_error_with_account_code_is_unknown_and_stops(
+    auth: FakeAuth, graph: respx.Route, status: int, code: str, fragment: str
+) -> None:
+    """A 5xx (or 3xx) may come after Microsoft took the message: never auth (which resends on
+    resume), always unknown, with the account problem as the reason to stop."""
+    graph.mock(return_value=error(status, code, **{"Retry-After": "30"}))
+    result = send(transport(auth))
+    assert result.outcome_unknown and not result.auth_error and not result.retryable
+    assert result.retry_after is None
+    assert result.error == f"Microsoft answered HTTP {status} {code}"
+    assert result.stop_reason and fragment in result.stop_reason and code in result.stop_reason
+    assert "secret detail" not in result.stop_reason and TOKEN not in result.stop_reason
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_server_error_without_account_code_doesnt_stop(
+    auth: FakeAuth, graph: respx.Route, status: int
+) -> None:
+    for response in (httpx.Response(status), error(status, "InternalServerError")):
+        graph.mock(return_value=response)
+        result = send(transport(auth))
+        assert result.outcome_unknown and result.stop_reason is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("code", ["ErrorMessageSubmissionBlocked", "ErrorAccessDenied"])
+def test_refusal_with_account_code_stays_auth(
+    auth: FakeAuth, graph: respx.Route, status: int, code: str
+) -> None:
+    graph.mock(return_value=error(status, code))
+    result = send(transport(auth))
+    assert result.auth_error and not result.outcome_unknown and result.stop_reason is None
 
 
 @pytest.mark.parametrize("status", [429, 503])
@@ -750,3 +799,65 @@ def test_worker_unknown_is_not_retried(tmp_path: Path, graph: respx.Route) -> No
     row = env.recipient(cid, "ada@example.com")
     assert row["status"] == campaigns.R_FAILED and "check Sent Items" in row["last_error"]
     assert graph.call_count == 1
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_worker_server_error_with_account_code_never_resends(
+    tmp_path: Path, graph: respx.Route, status: int
+) -> None:
+    """A 5xx carrying an account-level code: the recipient is unknown (counted, not retried),
+    the campaign stops, and resuming sends to the others only."""
+    graph.mock(return_value=error(status, "ErrorMessageSubmissionBlocked"))
+    env = GraphEnv(tmp_path)
+    cid = env.campaign(EMAILS)
+    env.drive()
+    c = env.campaign_row(cid)
+    assert c.status == campaigns.STOPPED_ERROR
+    assert c.last_error and c.last_error.startswith(sender.AUTH_STOP_MESSAGE)
+    assert "blocking this Outlook account" in c.last_error
+    assert "ada@example.com" in c.last_error and "check Sent Items" in c.last_error
+    assert graph.call_count == 1  # stopped at once, bob not tried
+    ada = env.recipient(cid, "ada@example.com")
+    assert ada["status"] == campaigns.R_FAILED and ada["attempts"] == 1
+    assert ada["next_attempt_at"] is None
+    assert ada["last_error"].startswith(f"outcome unknown (Microsoft answered HTTP {status} ")
+    assert ada["last_error"].endswith(campaigns.UNKNOWN_SUFFIX)
+    assert env.recipient(cid, "bob@example.com")["status"] == campaigns.R_PENDING
+    with env.db.connect() as conn:
+        outcomes = [r[0] for r in conn.execute("SELECT outcome FROM send_log ORDER BY id")]
+    assert outcomes == [None]  # unknown: counts against the daily cap
+    assert len(sender.sent_in_window(env.db, env.clock())) == 1
+
+    # Fixed: resuming sends to bob only; ada is never sent again.
+    graph.mock(return_value=httpx.Response(202))
+    campaigns.resume(env.db, cid, env.clock(), transport="graph")
+    env.drive()
+    assert env.campaign_row(cid).status == campaigns.FINISHED
+    assert graph.call_count == 2
+    to = [
+        str(message_from_bytes(base64.b64decode(call.request.content), policy=policy.default)["To"])
+        for call in graph.calls
+    ]
+    assert to == ["N0 <ada@example.com>", "N1 <bob@example.com>"]
+    assert env.recipient(cid, "ada@example.com")["status"] == campaigns.R_FAILED
+    assert env.recipient(cid, "bob@example.com")["status"] == campaigns.R_SENT
+
+
+def test_worker_503_with_account_code_is_resent_after_resume(
+    tmp_path: Path, graph: respx.Route
+) -> None:
+    """503 is a refusal (like the throttles): an account-level code there stops the campaign and
+    the recipient, certainly not sent, goes on resume."""
+    graph.mock(return_value=error(503, "ErrorExceededMessageLimit", **{"Retry-After": "5"}))
+    env = GraphEnv(tmp_path)
+    cid = env.campaign(EMAILS[:1])
+    env.drive()
+    c = env.campaign_row(cid)
+    assert c.status == campaigns.STOPPED_ERROR and c.last_error and "limit" in c.last_error
+    row = env.recipient(cid, "ada@example.com")
+    assert row["status"] == campaigns.R_PENDING and row["attempts"] == 0
+    graph.mock(return_value=httpx.Response(202))
+    campaigns.resume(env.db, cid, env.clock(), transport="graph")
+    env.drive()
+    assert env.campaign_row(cid).status == campaigns.FINISHED
+    assert graph.call_count == 2

@@ -487,6 +487,65 @@ def test_unknown_outcomes_count_as_consecutive_failures(tmp_path: Path) -> None:
     assert campaigns.counts(env.db, cid)[campaigns.R_FAILED] == 5
 
 
+def test_unknown_with_stop_reason_stops_and_is_never_resent(tmp_path: Path) -> None:
+    blocked = {"on": True}
+
+    def decide(recipient: str, attempt: int) -> SendResult | None:
+        if blocked["on"]:
+            return SendResult.unknown("HTTP 500 Blocked", stop_reason="The account is blocked.")
+        return None
+
+    env = Env(tmp_path, rate=60, cap=3, decide=decide)
+    cid = env.campaign(EMAILS)
+    env.drive()
+    c = campaigns.get_campaign(env.db, cid)
+    assert c is not None and c.status == campaigns.STOPPED_ERROR
+    assert c.last_error == (
+        f"{sender.AUTH_STOP_MESSAGE} The account is blocked. Row 2 (ada@example.com) may or may "
+        "not have received the email and won't be sent it again; check Sent Items. "
+        f"{sender.AUTH_STOP_AFTER}"
+    )
+    assert c.consecutive_failures == 1
+    rows = env.recipients(cid)
+    ada = rows["ada@example.com"]
+    assert ada["status"] == campaigns.R_FAILED and ada["attempts"] == 1
+    assert ada["next_attempt_at"] is None
+    assert ada["last_error"] == (
+        "outcome unknown (HTTP 500 Blocked) — may or may not have been delivered; check Sent Items"
+    )
+    assert rows["bob@example.com"]["status"] == campaigns.R_PENDING
+    assert env.transport.attempts == {"ada@example.com": 1}  # nobody else tried
+    assert env.step() is None
+    assert len(sender.sent_in_window(env.db, env.clock())) == 1  # counts against the cap
+
+    blocked["on"] = False
+    campaigns.resume(env.db, cid, env.clock(), transport="mock")
+    env.drive()
+    assert env.status(cid) == campaigns.FINISHED
+    assert env.transport.attempts["ada@example.com"] == 1  # never resent
+    assert env.outbox_to() == ["Name1 <bob@example.com>", "Name2 <cy@example.com>"]
+    assert env.recipients(cid)["ada@example.com"]["status"] == campaigns.R_FAILED
+    # The cap counted ada's unknown send: 3 in the window.
+    assert len(sender.sent_in_window(env.db, env.clock())) == 3
+
+
+def test_unknown_with_stop_reason_while_paused_stays_paused(tmp_path: Path) -> None:
+    env = Env(tmp_path, rate=60)
+    cid = env.campaign(EMAILS)
+
+    def decide(recipient: str, attempt: int) -> SendResult | None:
+        campaigns.pause(env.db, cid, env.clock())  # Jake pauses during the call
+        return SendResult.unknown("HTTP 502", stop_reason="The account is blocked.")
+
+    env.transport.decide = decide
+    env.drive()
+    c = campaigns.get_campaign(env.db, cid)
+    assert c is not None and c.status == campaigns.PAUSED
+    assert c.last_error and "The account is blocked." in c.last_error
+    assert env.recipients(cid)["ada@example.com"]["status"] == campaigns.R_FAILED
+    assert env.transport.attempts == {"ada@example.com": 1}
+
+
 def test_render_exception_is_a_failed_attempt(tmp_path: Path) -> None:
     env = Env(tmp_path, rate=60)
 
