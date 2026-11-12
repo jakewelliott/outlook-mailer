@@ -318,6 +318,11 @@ def _reserve(
 
 def _finish(db: Database, test_id: int, log_id: int, result: SendResult, now: datetime) -> None:
     outcome = "sent" if result.ok else None if result.outcome_unknown else "failed"
+    error = result.error
+    if result.stop_reason:
+        # Unknown, but the account is in trouble (e.g. a Graph 500 saying it is blocked): show
+        # what to do about the account too. It stays unknown, so the gate stays locked.
+        error = f"{error}. {result.stop_reason}"
     with db.connect() as conn:
         conn.execute("UPDATE send_log SET outcome = ? WHERE id = ?", (outcome, log_id))
         conn.execute(
@@ -327,7 +332,7 @@ def _finish(db: Database, test_id: int, log_id: int, result: SendResult, now: da
                 int(result.ok),
                 int(not result.ok and result.outcome_unknown),
                 result.provider_id,
-                result.error,
+                error,
                 test_id,
             ),
         )

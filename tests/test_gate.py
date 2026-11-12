@@ -252,6 +252,32 @@ def test_unknown_outcome_counts_but_does_not_pass(client: TestClient, clock: Fak
     assert t is not None and t.ok is False and t.outcome_unknown
 
 
+def test_unknown_with_stop_reason_shows_account_advice(
+    client: TestClient, clock: FakeClock
+) -> None:
+    # Fix A1: a Graph 5xx with an account-level code is unknown with a stop_reason; the test
+    # result must say what to do about the account, and the gate stays locked.
+    draft = make_draft(client)
+    save(client, draft)
+    advice = "Microsoft is blocking this Outlook account from sending (HTTP 500 Blocked)."
+    transport = client.app.state.transport  # type: ignore[attr-defined]
+    transport.decide = lambda r, n: SendResult.unknown(
+        "Microsoft answered HTTP 500 Blocked", stop_reason=advice
+    )
+    r = click_test(client, draft)
+    assert r.status_code == 303
+    page = compose_page(client, draft, "?" + r.headers["location"].split("?", 1)[1].split("#")[0])
+    assert "Not sure whether the test to you@example.com" in page
+    assert "Microsoft answered HTTP 500 Blocked" in page and advice in page
+    assert "Send a test to yourself first" in page  # the gate stays locked
+    assert 'id="start-send"' not in start_page(client, draft)
+    t = gate.latest_for_draft(db_of(client), draft)
+    assert t is not None and t.ok is False and t.outcome_unknown
+    assert t.error == f"Microsoft answered HTTP 500 Blocked. {advice}"
+    with db_of(client).connect() as conn:
+        assert conn.execute("SELECT outcome FROM send_log").fetchone()[0] is None
+
+
 def test_needs_saved_content_and_csrf(client: TestClient, tmp_path: Path) -> None:
     draft = make_draft(client)
     r = click_test(client, draft)
