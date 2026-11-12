@@ -133,10 +133,19 @@ def create_app(
         try:
             yield
         finally:
-            # Joins the sign-in thread (up to 3 s, 12 s for a sign-in being saved):
-            # keep it off the event loop.
-            await asyncio.to_thread(msauth.shutdown)
-            await worker.stop()
+            # Both at once, so the worst case is max(12 s, 15 s), not their sum, within the 30 s
+            # stop grace period. msauth.shutdown joins the sign-in thread (up to 3 s, 12 s for
+            # a sign-in being saved), in a thread to keep it off the event loop; worker.stop
+            # waits up to SHUTDOWN_GRACE_SECONDS for the send in flight. Neither needs the
+            # other: shutdown only ends the sign-in, so get_access_token keeps working while
+            # the in-flight send finishes (and any error there is "not sent", never a resend).
+            # return_exceptions: wait for both even if one fails, then raise.
+            results = await asyncio.gather(
+                asyncio.to_thread(msauth.shutdown), worker.stop(), return_exceptions=True
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
             await transport.aclose()
             db.close()
 
