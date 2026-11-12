@@ -15,9 +15,13 @@ What happened                                              Result
 =========================================================  =====================================
 2xx (202 Accepted)                                         success, ``provider_id`` = request-id
 ``NotSignedIn`` / ``ReauthRequired``, 401                  auth (stop the campaign)
-403, or an account-level ``error.code`` with any status    auth (stop), with a message saying
-(``ACCOUNT_CODES``: blocked for sending, no permission,    what to do
-send-as refused, mailbox quota or REST not enabled)
+403, or an account-level ``error.code``                    auth (stop; the recipient is sent on
+(``ACCOUNT_CODES``: blocked for sending, no permission,    resume), with a message saying what
+send-as refused, mailbox quota or REST not enabled) with   to do
+a 4xx, 429, 503 or 509 status (a refusal: nothing sent)
+An account-level ``error.code`` with any other status      unknown for this recipient (never
+(500, 502, 504, other 5xx, 1xx/3xx)                        resent), with ``stop_reason``: the
+                                                           campaign stops too
 ``TokenUnavailable``, token step over budget               retry (no request was sent)
 429, 503 (and 509)                                         retry, ``retry_after`` from
                                                            ``Retry-After`` (seconds or HTTP
@@ -29,6 +33,12 @@ errors, the overall budget running out mid-request, 500,
 502, 504 and any other 5xx, 1xx/3xx
 Any other 4xx (400, 404, 413, ...)                         permanent, with Graph's ``error.code``
 =========================================================  =====================================
+
+Only a status that says the request was refused (4xx) or not processed (the 429/503/509
+throttles, already trusted as "certainly not sent" for retries) may become auth, because an
+auth result puts the recipient back to be sent again on resume. A 500/502/504 doesn't say
+whether the message went out, so an account-level code there can stop the campaign but can't
+make the recipient retryable (docs/DECISIONS.md "Graph 5xx with an account-level code").
 
 Time budget: the token step and the request together are cut off after
 ``SEND_BUDGET_SECONDS`` (12 s), below ``app.sender.SHUTDOWN_GRACE_SECONDS`` (15 s), so a send in
@@ -275,7 +285,14 @@ class GraphTransport(Transport):
 
         account = next((ACCOUNT_CODES[c] for c in codes if c in ACCOUNT_CODES), None)
         if account is not None:
-            return SendResult.auth(account.format(code=detail))
+            if 400 <= status < 500 or status in THROTTLE_STATUSES:
+                # Refused, nothing sent: stop, and the recipient is sent on resume.
+                return SendResult.auth(account.format(code=detail))
+            # A 500/502/504 (or 1xx/3xx) proves nothing about this message: it may have gone
+            # out, so it must never be resent. Still stop: the account is in trouble.
+            return SendResult.unknown(
+                f"Microsoft answered {detail}", stop_reason=account.format(code=detail)
+            )
         if status == 401:
             self.msauth.note_token_rejected()
             return SendResult.auth(

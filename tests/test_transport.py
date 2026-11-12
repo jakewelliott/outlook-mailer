@@ -42,6 +42,9 @@ def test_result_constructors() -> None:
     u = SendResult.unknown("read timeout")
     assert (u.ok, u.retryable, u.auth_error, u.outcome_unknown) == (False, False, False, True)
     assert r.throttled and not SendResult.retry("timeout").throttled and not u.throttled
+    assert u.stop_reason is None
+    s = SendResult.unknown("HTTP 500", stop_reason="account blocked")
+    assert s.outcome_unknown and s.stop_reason == "account blocked"
 
 
 @pytest.mark.parametrize(
@@ -57,6 +60,11 @@ def test_result_constructors() -> None:
         {"ok": False, "error": "x", "outcome_unknown": True, "retryable": True},
         {"ok": False, "error": "x", "outcome_unknown": True, "auth_error": True},
         {"ok": False, "error": "x", "outcome_unknown": True, "retry_after": 5},
+        {"ok": False, "error": "x", "stop_reason": "blocked"},
+        {"ok": False, "error": "x", "auth_error": True, "stop_reason": "blocked"},
+        {"ok": False, "error": "x", "retryable": True, "stop_reason": "blocked"},
+        {"ok": True, "stop_reason": "blocked"},
+        {"ok": False, "error": "x", "outcome_unknown": True, "stop_reason": ""},
     ],
 )
 def test_inconsistent_results_refused(kwargs: dict[str, object]) -> None:
