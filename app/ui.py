@@ -14,7 +14,8 @@ APP_DIR = Path(__file__).parent
 TEMPLATES_DIR = APP_DIR / "templates"
 STATIC_DIR = APP_DIR / "static"
 
-# Nav entries: (path, label). Pages not built yet render a placeholder.
+# Nav entries: (path, label). "/" is routed here, "/send/new" in ui_send, "/campaigns" in
+# ui_campaigns, "/unsubscribes" in ui_unsubscribes, "/account" in ui_account.
 NAV = [
     ("/", "Home"),
     ("/send/new", "New send"),
@@ -22,10 +23,6 @@ NAV = [
     ("/unsubscribes", "Unsubscribes"),
     ("/account", "Account"),
 ]
-# Pages with real routes elsewhere: "/" here, "/send/new" in ui_send, "/campaigns" in
-# ui_campaigns, "/unsubscribes" in ui_unsubscribes, "/account" in ui_account.
-REAL_PAGES = ("/", "/send/new", "/campaigns", "/unsubscribes", "/account")
-PLACEHOLDERS = {path: label for path, label in NAV if path not in REAL_PAGES}
 
 
 def ms_indicator(request: Request) -> str:
@@ -60,16 +57,3 @@ def home(request: Request) -> HTMLResponse:
         "ui/home.html.j2",
         {"settings": _settings(request), "active": "/", "ms": request.app.state.msauth.status()},
     )
-
-
-def _placeholder(path: str, label: str) -> None:
-    def page(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse(
-            request, "ui/placeholder.html.j2", {"title": label, "active": path}
-        )
-
-    router.add_api_route(path, page, methods=["GET"], name=f"placeholder:{path}")
-
-
-for _path, _label in PLACEHOLDERS.items():
-    _placeholder(_path, _label)
