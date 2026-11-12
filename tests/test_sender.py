@@ -992,17 +992,19 @@ def test_replayed_auth_outcome_does_not_stop_a_resumed_send(
     assert {r["status"] for r in env.recipients(cid).values()} == {campaigns.R_SENT}
 
 
+@pytest.mark.parametrize("kind", ["retry", *sorted(PRE_SEND)])
 def test_outcome_whose_write_rolled_back_is_written_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     """The ordinary case the guard must not block: the write fails before committing, so the
-    replay is the one that records it."""
+    replay is the one that records it. For a pre-send outcome this proves the attempts check
+    (``current["attempts"] != row.attempts``) lets the real first write through."""
     monkeypatch.setattr(sender, "RECORD_RETRY_SECONDS", ())
-    once = reapply_env(tmp_path / "once", "retry")
+    once = reapply_env(tmp_path / "once", kind)
     once.campaign(EMAILS)
     once.step()
     once.step()
-    twice = reapply_env(tmp_path / "twice", "retry")
+    twice = reapply_env(tmp_path / "twice", kind)
     twice.campaign(EMAILS)
     record = twice.worker._record
     calls = {"n": 0}
