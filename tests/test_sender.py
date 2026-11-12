@@ -1334,7 +1334,7 @@ def test_cancel_racing_the_record(
 
     def hooked(conn: sqlite3.Connection) -> None:
         if canceller and threading.current_thread() is canceller[0]:
-            cancel_locking.set()  # cancel's first step: it now waits for _record's lock
+            cancel_locking.set()  # the cancel is about to take the lock (then waits for _record)
             real_begin(conn)
             return
         if not armed.is_set():

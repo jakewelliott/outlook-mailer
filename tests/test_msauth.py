@@ -224,9 +224,15 @@ def sign_in(auth: MicrosoftAuth) -> None:
     assert auth.status().state == "signed_in", auth.status().error
 
 
-def quick(fn: Callable[[], Any], limit: float = 5.0) -> Any:
+def quick(fn: Callable[[], Any], limit: float = 15.0) -> Any:
     """Call ``fn`` in a thread; fail if it hasn't returned within ``limit`` seconds. Returns its
-    result or re-raises its exception."""
+    result or re-raises its exception.
+
+    Every caller races a fake-MSAL gate that waits 30 s (or, for ``shutdown``, a poll that never
+    ends by itself), so a call that really blocks takes at least 30 s and still fails here. Under
+    load single whole tests took 5 to 12 s (three suites at once) and ``shutdown`` may wait 3 s by
+    design, so the old 5 s could fail a call that didn't block; 15 s is above that and still half
+    the gates. Keep it well below 30 s, or a real block would no longer be detected."""
     out: list[Any] = []
     thread, errors = in_thread(lambda: out.append(fn()))
     thread.join(limit)
