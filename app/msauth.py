@@ -864,10 +864,17 @@ class MicrosoftAuth:
 
     def shutdown(self) -> None:
         """At app shutdown: end a sign-in in progress (waits up to 3 s for its thread, so call
-        it from a thread, not the event loop)."""
+        it from a thread, not the event loop). A sign-in already being saved can't be stopped:
+        wait for it (no time limit), so the cache file and the database agree after a restart."""
         with self._state_lock:
             slot = self._slot
+            committing = isinstance(slot, _Flow) and slot.committing
             if slot is not None:
                 self._stop(slot)
-        if isinstance(slot, _Flow) and slot.thread is not None:
+        if committing:
+            # _commit holds _msal_lock; bounded by one file write and the database's 10 s
+            # lock timeout, within the container's 30 s stop grace period.
+            with self._msal_lock:
+                pass
+        elif isinstance(slot, _Flow) and slot.thread is not None:
             slot.thread.join(timeout=3)

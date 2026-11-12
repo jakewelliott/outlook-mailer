@@ -1011,6 +1011,8 @@ def test_page_not_configured(tmp_path: Path, scenario: Scenario) -> None:
 # --- saving a sign-in fails ----------------------------------------------------------------------
 
 NEW_REFRESH = "M.C5_BAY.NEW-REFRESH-TOKEN-secret"
+OLD_SENDER = msauth.Sender("Jake@outlook.com", "Jake Elliott")
+NEW_SENDER = msauth.Sender("new@outlook.com", "New Person")
 
 
 def failing_store(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1020,68 +1022,30 @@ def failing_store(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(msauth, "_store_sender", store)
 
 
-def test_commit_db_failure_keeps_old_sign_in(
-    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    auth = make_auth(tmp_path)
-    sign_in(auth)
-    scenario.result = {**token_response(), "refresh_token": NEW_REFRESH}
-    failing_store(monkeypatch)
+def next_account_is_new(scenario: Scenario, me: respx.Route) -> None:
+    """The next sign-in is a different account (``NEW_SENDER``, ``NEW_REFRESH``)."""
+    scenario.result = {**token_response(username="new@outlook.com"), "refresh_token": NEW_REFRESH}
+    profile = {"displayName": "New Person", "mail": "new@outlook.com"}
+    me.mock(return_value=httpx.Response(200, json=profile))
+
+
+def start_held(auth: MicrosoftAuth, scenario: Scenario) -> threading.Thread:
+    """Start a sign-in whose poll waits for ``scenario.release``; returns its thread."""
+    scenario.hold = True
+    scenario.release.clear()
     auth.start_sign_in()
-    wait_done(auth)
-    status = auth.status()
-    assert status.state == "signed_in" and "couldn't be saved in the database" in (
-        status.error or ""
-    )
-    raw = (tmp_path / CACHE_FILE).read_text()
-    assert REFRESH_TOKEN in raw and NEW_REFRESH not in raw  # the old sign-in is back on disk
-    assert auth.get_access_token().startswith("silent-")
-    assert get_sender(auth.db) == msauth.Sender("Jake@outlook.com", "Jake Elliott")
+    slot = auth._slot
+    assert isinstance(slot, msauth._Flow) and slot.thread is not None
+    return slot.thread
 
 
-def test_commit_db_failure_when_signed_out_leaves_no_file(
-    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    auth = make_auth(tmp_path)
-    failing_store(monkeypatch)
-    auth.start_sign_in()
-    wait_done(auth)
-    assert auth.status().state == "signed_out"
-    assert not (tmp_path / CACHE_FILE).exists()
+def finish(thread: threading.Thread) -> None:
+    thread.join(30)
+    assert not thread.is_alive()
 
 
-def test_commit_restore_failure_deletes_the_file(
-    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The new sign-in is on disk, the database write fails and so does putting the old file
-    back: the file is deleted, so file and database can't disagree after a restart."""
-    auth = make_auth(tmp_path)
-    sign_in(auth)
-    scenario.result = {**token_response(), "refresh_token": NEW_REFRESH}
-    failing_store(monkeypatch)
-    real_write = msauth._CacheFile.write
-    writes: list[int] = []
-
-    def write(self: Any, state: str) -> None:
-        writes.append(1)
-        if len(writes) > 1:  # the restore
-            raise OSError(28, "No space left on device")
-        real_write(self, state)
-
-    monkeypatch.setattr(msauth._CacheFile, "write", write)
-    auth.start_sign_in()
-    wait_done(auth)
-    assert len(writes) == 2
-    assert not (tmp_path / CACHE_FILE).exists()
-    assert "couldn't be saved" in (auth.status().error or "")
-    monkeypatch.undo()
-    assert make_auth(tmp_path).status().state == "signed_out"
-
-
-def test_cancel_during_commit_is_refused(
-    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    auth = make_auth(tmp_path)
+def gate_store(monkeypatch: pytest.MonkeyPatch) -> tuple[threading.Event, threading.Event]:
+    """``_store_sender`` sets the first event, then waits for the second before writing."""
     entered, release = threading.Event(), threading.Event()
     real_store = msauth._store_sender
 
@@ -1091,14 +1055,345 @@ def test_cancel_during_commit_is_refused(
         real_store(db, sender)
 
     monkeypatch.setattr(msauth, "_store_sender", store)
+    return entered, release
+
+
+def catch_thread_errors(monkeypatch: pytest.MonkeyPatch) -> list[BaseException]:
+    """Collect exceptions that escape any thread (e.g. the sign-in thread) from now on. Call it
+    in the test body: pytest installs its own hook when the test starts."""
+    errors: list[BaseException] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args.exc_value))
+    return errors
+
+
+class SignalledLock:
+    """Stands in for ``_msal_lock``: ``waiting`` is set when a thread starts to take it."""
+
+    def __init__(self, lock: Any) -> None:
+        self.lock = lock
+        self.waiting = threading.Event()
+
+    def __enter__(self) -> Any:
+        self.waiting.set()
+        return self.lock.__enter__()
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self.lock.__exit__(*exc)
+
+
+def restart(auth: MicrosoftAuth) -> MicrosoftAuth:
+    """A new instance on the same DATA_DIR and database, as after an app restart."""
+    return MicrosoftAuth(auth.settings, auth.db)
+
+
+def test_commit_file_failure_keeps_old_sign_in(
+    tmp_path: Path,
+    scenario: Scenario,
+    me: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    thread_errors = catch_thread_errors(monkeypatch)
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    old_cache, old_client = auth._cache, auth._client
+    before = (tmp_path / CACHE_FILE).read_bytes()
+    next_account_is_new(scenario, me)
+    stored: list[Any] = []
+    real_store = msauth._store_sender
+    with monkeypatch.context() as m:
+        m.setattr(msauth, "_store_sender", lambda db, s: (stored.append(s), real_store(db, s)))
+
+        def write(self: Any, state: str) -> None:
+            raise OSError(13, "Permission denied")
+
+        m.setattr(msauth._CacheFile, "write", write)
+        thread = start_held(auth, scenario)
+        scenario.release.set()
+        finish(thread)
+    status = auth.status()
+    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert "couldn't be saved in DATA_DIR" in (status.error or "")
+    assert auth._cache is old_cache and auth._client is old_client
+    assert stored == []  # the database isn't touched
+    assert (tmp_path / CACHE_FILE).read_bytes() == before
+    assert get_sender(auth.db) == OLD_SENDER
+    assert auth.get_access_token().startswith("silent-")
+    again = restart(auth)
+    assert again.status().state == "signed_in" and again.sender() == OLD_SENDER
+    assert again.get_access_token().startswith("silent-")
+    assert not thread_errors
+
+
+def test_commit_file_failure_when_signed_out(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = make_auth(tmp_path)
+
+    def write(self: Any, state: str) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(msauth._CacheFile, "write", write)
     auth.start_sign_in()
+    wait_done(auth)
+    status = auth.status()
+    assert status.state == "signed_out" and "couldn't be saved in DATA_DIR" in (status.error or "")
+    assert not (tmp_path / CACHE_FILE).exists()
+    assert get_sender(auth.db) is None
+    with pytest.raises(NotSignedIn):
+        auth.get_access_token()
+    assert restart(auth).status().state == "signed_out"
+
+
+def test_commit_db_failure_keeps_old_sign_in(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    old_cache, old_client = auth._cache, auth._client
+    next_account_is_new(scenario, me)
+    with monkeypatch.context() as m:
+        failing_store(m)
+        auth.start_sign_in()
+        wait_done(auth)
+    status = auth.status()
+    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert "couldn't be saved in the database" in (status.error or "")
+    assert auth._cache is old_cache and auth._client is old_client
+    raw = (tmp_path / CACHE_FILE).read_text()
+    assert REFRESH_TOKEN in raw and NEW_REFRESH not in raw  # the old sign-in is back on disk
+    assert auth.get_access_token().startswith("silent-")
+    assert get_sender(auth.db) == OLD_SENDER
+    # After a restart: the previous account, and the file and database agree.
+    again = restart(auth)
+    assert again.status().state == "signed_in" and again.sender() == OLD_SENDER
+    saved = again._cache.serialize()
+    assert REFRESH_TOKEN in saved and NEW_REFRESH not in saved
+    assert again.get_access_token().startswith("silent-")
+
+
+def test_commit_db_failure_when_signed_out_leaves_no_file(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth = make_auth(tmp_path)
+    failing_store(monkeypatch)
+    auth.start_sign_in()
+    wait_done(auth)
+    status = auth.status()
+    assert status.state == "signed_out" and "couldn't be saved in the database" in (
+        status.error or ""
+    )
+    assert not (tmp_path / CACHE_FILE).exists()
+    assert get_sender(auth.db) is None
+    assert restart(auth).status().state == "signed_out"
+
+
+def test_commit_restore_failure_deletes_the_file(
+    tmp_path: Path, scenario: Scenario, me: respx.Route, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new sign-in is on disk, the database write fails and so does putting the old file
+    back: the file is deleted, so file and database can't disagree after a restart."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    next_account_is_new(scenario, me)
+    real_write = msauth._CacheFile.write
+    writes: list[int] = []
+
+    def write(self: Any, state: str) -> None:
+        writes.append(1)
+        if len(writes) > 1:  # the restore
+            raise OSError(28, "No space left on device")
+        real_write(self, state)
+
+    with monkeypatch.context() as m:
+        failing_store(m)
+        m.setattr(msauth._CacheFile, "write", write)
+        auth.start_sign_in()
+        wait_done(auth)
+    assert len(writes) == 2
+    assert not (tmp_path / CACHE_FILE).exists()
+    assert "couldn't be saved" in (auth.status().error or "")
+    assert get_sender(auth.db) == OLD_SENDER
+    # Not signed in as the new account under the old address: signed out.
+    again = restart(auth)
+    assert again.status().state == "signed_out" and again.sender() is None
+    with pytest.raises(NotSignedIn):
+        again.get_access_token()
+
+
+def test_commit_restore_and_delete_failure_is_contained(
+    tmp_path: Path,
+    scenario: Scenario,
+    me: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even the delete fails: nothing escapes the sign-in thread and the running app keeps the
+    previous sign-in. (The file is then left as the new account: nothing more can be done.)"""
+    thread_errors = catch_thread_errors(monkeypatch)
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    old_cache = auth._cache
+    next_account_is_new(scenario, me)
+    real_write = msauth._CacheFile.write
+    writes: list[int] = []
+    deletes: list[int] = []
+
+    def write(self: Any, state: str) -> None:
+        writes.append(1)
+        if len(writes) > 1:
+            raise OSError(5, "Input/output error")
+        real_write(self, state)
+
+    def delete(self: Any) -> None:
+        deletes.append(1)
+        raise OSError(5, "Input/output error")
+
+    with monkeypatch.context() as m:
+        failing_store(m)
+        m.setattr(msauth._CacheFile, "write", write)
+        m.setattr(msauth._CacheFile, "delete", delete)
+        thread = start_held(auth, scenario)
+        scenario.release.set()
+        finish(thread)
+    assert len(writes) == 2 and len(deletes) == 1
+    assert not thread_errors
+    status = auth.status()
+    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert "couldn't be saved in the database" in (status.error or "")
+    assert auth._cache is old_cache
+    assert auth._slot is None
+    assert auth.get_access_token().startswith("silent-")
+
+
+# --- cancel, sign-out and shutdown while a sign-in is being saved --------------------------------
+
+
+def test_cancel_during_commit_is_refused(
+    tmp_path: Path,
+    scenario: Scenario,
+    me: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    thread_errors = catch_thread_errors(monkeypatch)
+    auth = make_auth(tmp_path)
+    entered, release = gate_store(monkeypatch)
+    thread = start_held(auth, scenario)
+    scenario.release.set()
     assert entered.wait(30)  # succeeded, now saving
     assert quick(auth.cancel_sign_in) is False  # too late to cancel
     assert quick(auth.status).state == "signing_in"
     release.set()
-    wait_done(auth)
+    finish(thread)
     status = auth.status()
     assert status.state == "signed_in" and status.notice == "Connected as Jake@outlook.com."
+    assert get_sender(auth.db) == OLD_SENDER
+    assert restart(auth).sender() == OLD_SENDER
+    assert not thread_errors
+
+
+def test_cancel_while_waiting_to_commit(
+    tmp_path: Path,
+    scenario: Scenario,
+    me: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Microsoft accepted, but a token renewal holds the MSAL lock, so saving hasn't started:
+    a cancel still wins and the previous sign-in stays, in memory and on disk."""
+    thread_errors = catch_thread_errors(monkeypatch)
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    before = (tmp_path / CACHE_FILE).read_bytes()
+    next_account_is_new(scenario, me)
+    entered, gate = threading.Event(), threading.Event()
+
+    def silent() -> Any:
+        entered.set()
+        assert gate.wait(30)
+        return {"access_token": "t"}
+
+    scenario.silent = silent
+    renewal, errors = in_thread(auth.get_access_token)
+    assert entered.wait(30)  # holding the MSAL lock
+    thread = start_held(auth, scenario)
+    scenario.release.set()
+    assert quick(auth.cancel_sign_in) is True
+    gate.set()
+    finish(renewal)
+    finish(thread)
+    assert not errors and not thread_errors
+    status = auth.status()
+    assert status.state == "signed_in" and status.sender == OLD_SENDER
+    assert status.notice == "Sign-in cancelled."
+    assert (tmp_path / CACHE_FILE).read_bytes() == before
+    assert get_sender(auth.db) == OLD_SENDER
+    assert restart(auth).sender() == OLD_SENDER
+
+
+def test_sign_out_during_commit_signs_out_after_it(
+    tmp_path: Path,
+    scenario: Scenario,
+    me: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sign-out waits for the save (it needs the MSAL lock), then removes the new account."""
+    thread_errors = catch_thread_errors(monkeypatch)
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    next_account_is_new(scenario, me)
+    entered, release = gate_store(monkeypatch)
+    thread = start_held(auth, scenario)
+    scenario.release.set()
+    assert entered.wait(30)  # the new cache is on disk, the sender not yet
+    lock = SignalledLock(auth._msal_lock)
+    auth._msal_lock = lock  # type: ignore[assignment]
+    signing_out, errors = in_thread(auth.sign_out)
+    assert lock.waiting.wait(30)  # sign_out is waiting for the save
+    assert quick(auth.status).state == "signing_in"  # the pages don't wait meanwhile
+    release.set()
+    finish(signing_out)
+    finish(thread)
+    assert not errors and not thread_errors
+    status = auth.status()
+    assert status.state == "signed_out" and status.notice and "Signed out" in status.notice
+    assert auth._slot is None
+    assert not (tmp_path / CACHE_FILE).exists()
+    assert get_sender(auth.db) is None
+    with pytest.raises(NotSignedIn):
+        auth.get_access_token()
+    assert restart(auth).status().state == "signed_out"
+
+
+def test_shutdown_during_commit_waits_for_it(
+    tmp_path: Path,
+    scenario: Scenario,
+    me: respx.Route,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sign-in being saved can't be stopped, so shutdown waits for the save (fix B4): the
+    app must not exit with the new account in the file and the old address in the database."""
+    thread_errors = catch_thread_errors(monkeypatch)
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    next_account_is_new(scenario, me)
+    entered, release = gate_store(monkeypatch)
+    thread = start_held(auth, scenario)
+    scenario.release.set()
+    assert entered.wait(30)  # the new cache is on disk, the sender not yet
+    lock = SignalledLock(auth._msal_lock)
+    auth._msal_lock = lock  # type: ignore[assignment]
+    stopping, errors = in_thread(auth.shutdown)
+    assert lock.waiting.wait(30)  # shutdown is waiting for the save...
+    assert stopping.is_alive()  # ...which can't finish until released, so it hasn't returned
+    release.set()
+    finish(stopping)
+    finish(thread)
+    assert not errors and not thread_errors
+    # Saved in full: the new account in memory, in the file and in the database.
+    assert auth.status().state == "signed_in" and auth.sender() == NEW_SENDER
+    assert get_sender(auth.db) == NEW_SENDER
+    assert NEW_REFRESH in (tmp_path / CACHE_FILE).read_text()
+    again = restart(auth)
+    assert again.status().state == "signed_in" and again.sender() == NEW_SENDER
+    assert NEW_REFRESH in again._cache.serialize()
 
 
 def test_refused_start_shows_a_notice(
