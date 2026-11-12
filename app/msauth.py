@@ -369,7 +369,13 @@ def _is_json_object(raw: bytes) -> bool:
 
 
 def _accounts(cache: msal.SerializableTokenCache) -> list[dict[str, Any]]:
-    return list(cache.search(msal.TokenCache.CredentialType.ACCOUNT))
+    """The cache's accounts, one per ``home_account_id``, as MSAL's ``get_accounts`` counts
+    them: the same account signed in under another realm (e.g. after ``MS_AUTHORITY`` changed
+    from /consumers to /common) adds a second account record, but is still one account."""
+    distinct: dict[Any, dict[str, Any]] = {}
+    for account in cache.search(msal.TokenCache.CredentialType.ACCOUNT):
+        distinct.setdefault(account.get("home_account_id"), account)
+    return list(distinct.values())
 
 
 def _same_account(account: dict[str, Any], sender: Sender) -> bool:

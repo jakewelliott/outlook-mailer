@@ -367,6 +367,9 @@ timed out) and its result is saved before Docker kills the process:
 
 **Graph request budget 12 s < `SHUTDOWN_GRACE_SECONDS` 15 s < container stop grace period 30 s.**
 
+At the same time (not one after the other) the app ends a Microsoft sign-in in progress, waiting up to 3 s for it,
+or up to 12 s if it is already being saved, so the whole shutdown takes at most about 15 s.
+
 **The habit to keep: pause a running send before you stop the container, update it, edit and Apply its
 settings, stop the array or reboot the server.** A paused send has nothing in flight, so it doesn't matter how long Docker waits, and it resumes
 where it left off.

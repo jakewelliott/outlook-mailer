@@ -154,7 +154,11 @@ class FakeApp:
         return result
 
     def get_accounts(self) -> list[dict[str, Any]]:
-        return list(self.cache.search(msal.TokenCache.CredentialType.ACCOUNT))
+        # Like MSAL: one per home_account_id (the same account in two realms is one).
+        accounts: dict[Any, dict[str, Any]] = {}
+        for account in self.cache.search(msal.TokenCache.CredentialType.ACCOUNT):
+            accounts[account.get("home_account_id")] = account
+        return list(accounts.values())
 
     def acquire_token_silent_with_error(
         self, scopes: list[str], account: Any, force_refresh: bool = False
@@ -795,6 +799,34 @@ def test_app_shutdown_does_not_block_the_event_loop(
 
     asyncio.run(run())
     assert released == [True]
+
+
+def test_app_shutdown_runs_msauth_and_worker_concurrently(
+    tmp_path: Path, scenario: Scenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sign-in wait and the send worker's grace period overlap: each waits until the other
+    has started, which can only happen if neither waits for the other to finish."""
+    app = create_app(graph_settings(tmp_path), run_worker=False)
+    auth_in, worker_in = threading.Event(), threading.Event()
+    saw: dict[str, bool] = {}
+
+    def slow_shutdown() -> None:
+        auth_in.set()
+        saw["auth saw worker"] = worker_in.wait(30)
+
+    async def slow_stop() -> None:
+        worker_in.set()
+        saw["worker saw auth"] = await asyncio.to_thread(auth_in.wait, 30)
+
+    monkeypatch.setattr(app.state.msauth, "shutdown", slow_shutdown)
+    monkeypatch.setattr(app.state.worker, "stop", slow_stop)
+
+    async def run() -> None:
+        async with app.router.lifespan_context(app):
+            pass
+
+    asyncio.run(run())
+    assert saw == {"auth saw worker": True, "worker saw auth": True}
 
 
 def test_real_shutdown_ends_a_sign_in(tmp_path: Path, scenario: Scenario) -> None:
@@ -1562,6 +1594,48 @@ def test_cache_with_two_accounts_is_not_used(
         )
         auth._save(strict=True)
     assert len(msauth._accounts(restart(auth)._cache)) == 0  # not loaded
+    assert_not_used(restart(auth), scenario, "more than one account")
+
+
+def add_realm_record(auth: MicrosoftAuth, authority: str, username: str) -> None:
+    """Add an account record as a token response from ``authority`` (its realm) would."""
+    with auth._msal_lock:
+        auth._cache.add(
+            {
+                "client_id": CLIENT_ID,
+                "scope": list(SCOPES),
+                "token_endpoint": f"https://login.microsoftonline.com/{authority}/oauth2/v2.0/token",
+                "response": token_response(username=username),
+                "params": {},
+                "data": {},
+            }
+        )
+        auth._save(strict=True)
+
+
+def test_same_account_in_two_realms_is_one_account(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    """MS_AUTHORITY changed after the sign-in (/consumers to /common): the next renewal adds a
+    second record for the same account under another realm. Still one account: signed in."""
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    add_realm_record(auth, "common", "jake@outlook.com")
+    records = list(auth._cache.search(msal.TokenCache.CredentialType.ACCOUNT))
+    assert len({r["realm"] for r in records}) == 2  # two records ...
+    assert len({r["home_account_id"] for r in records}) == 1  # ... of one account
+    again = restart(auth)
+    assert again.status().state == "signed_in" and again.status().error is None
+    assert again.sender() == get_sender(auth.db)
+    assert again.get_access_token().startswith("silent-")
+
+
+def test_two_accounts_in_two_realms_are_not_used(
+    tmp_path: Path, scenario: Scenario, me: respx.Route
+) -> None:
+    auth = make_auth(tmp_path)
+    sign_in(auth)
+    add_realm_record(auth, "common", "new@outlook.com")
     assert_not_used(restart(auth), scenario, "more than one account")
 
 
