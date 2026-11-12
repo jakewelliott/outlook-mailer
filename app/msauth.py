@@ -22,6 +22,13 @@
   (key changed or removed) means signed out, with a message; it is left in place until the next
   sign-in or sign-out replaces or deletes it. A plain file found when a key is set is read and
   rewritten encrypted.
+- The cache file and the sender in the database are two separate writes (a sign-in saves the
+  file first), so an exit or crash between them can leave them disagreeing. ``load`` therefore
+  checks that the cache holds exactly one account and that it is the stored sender's (the MSAL
+  ``home_account_id`` stored with the sender; for a sender saved before that was stored, the
+  account's ``username`` compared with ``normalise_key``). If not, or if only one of the two
+  exists, the app is signed out with a message asking to connect again: the tokens are never
+  used under another account's address. ``get_access_token`` checks the same again.
 - ``sign_out`` forgets the account: empty cache, file deleted, sender cleared.
 
 Only ``start_sign_in``, the polling thread and ``get_access_token`` talk to Microsoft;
@@ -41,7 +48,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -68,6 +75,11 @@ CONSUMER_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
 HTTP_TIMEOUT_SECONDS = 10
 SENDER_ADDRESS_KEY = "ms_sender_address"
 SENDER_NAME_KEY = "ms_sender_name"
+SENDER_ACCOUNT_KEY = "ms_sender_account"  # the MSAL home_account_id the sender belongs to
+# How long shutdown waits for the sign-in thread: a sign-in being saved (one file write and one
+# database write, whose lock wait is 10 s), or any other. Best-effort: see ``shutdown``.
+SHUTDOWN_SAVE_WAIT_SECONDS = 12
+SHUTDOWN_SIGN_IN_WAIT_SECONDS = 3
 TROUBLESHOOTING_URL = (
     "https://github.com/jakewelliott/outlook-mailer/blob/main/docs/entra-setup.md#troubleshooting"
 )
@@ -118,6 +130,9 @@ class SignInError(Exception):
 class Sender:
     address: str
     name: str | None
+    # The MSAL ``home_account_id`` of the account the address was read from (None for a sender
+    # saved before it was stored). Identifies the account, not the message: not compared.
+    account_id: str | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -152,25 +167,32 @@ def get_sender(db: Database) -> Sender | None:
     """The signed-in address and display name, or None when signed out."""
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT key, value FROM settings WHERE key IN (?, ?)",
-            (SENDER_ADDRESS_KEY, SENDER_NAME_KEY),
+            "SELECT key, value FROM settings WHERE key IN (?, ?, ?)",
+            (SENDER_ADDRESS_KEY, SENDER_NAME_KEY, SENDER_ACCOUNT_KEY),
         ).fetchall()
     values = {row["key"]: row["value"] for row in rows}
     address = values.get(SENDER_ADDRESS_KEY)
     if not address:
         return None
-    return Sender(address, values.get(SENDER_NAME_KEY) or None)
+    return Sender(
+        address, values.get(SENDER_NAME_KEY) or None, values.get(SENDER_ACCOUNT_KEY) or None
+    )
 
 
 def _store_sender(db: Database, sender: Sender | None) -> None:
     with db.connect() as conn:
         conn.execute(
-            "DELETE FROM settings WHERE key IN (?, ?)", (SENDER_ADDRESS_KEY, SENDER_NAME_KEY)
+            "DELETE FROM settings WHERE key IN (?, ?, ?)",
+            (SENDER_ADDRESS_KEY, SENDER_NAME_KEY, SENDER_ACCOUNT_KEY),
         )
         if sender is not None:
             conn.executemany(
                 "INSERT INTO settings (key, value) VALUES (?, ?)",
-                [(SENDER_ADDRESS_KEY, sender.address), (SENDER_NAME_KEY, sender.name or "")],
+                [
+                    (SENDER_ADDRESS_KEY, sender.address),
+                    (SENDER_NAME_KEY, sender.name or ""),
+                    (SENDER_ACCOUNT_KEY, sender.account_id or ""),
+                ],
             )
 
 
@@ -347,6 +369,45 @@ def _accounts(cache: msal.SerializableTokenCache) -> list[dict[str, Any]]:
     return list(cache.search(msal.TokenCache.CredentialType.ACCOUNT))
 
 
+def _same_account(account: dict[str, Any], sender: Sender) -> bool:
+    """Whether the MSAL ``account`` is the one ``sender``'s address was read from."""
+    if sender.account_id:
+        return account.get("home_account_id") == sender.account_id
+    # A sender saved before the account ID was stored: compare the sign-in name.
+    username = account.get("username")
+    return isinstance(username, str) and normalise_key(username) == normalise_key(sender.address)
+
+
+_CONNECT_AGAIN = "To be safe it isn't used. Connect the account again."
+
+
+def _mismatch(accounts: list[dict[str, Any]], sender: Sender | None) -> str | None:
+    """Why the cache's accounts and the stored sender can't be used together (a message for the
+    user), or None if they agree (both empty counts as agreeing: signed out)."""
+    if not accounts and sender is None:
+        return None
+    if len(accounts) > 1:
+        return f"The saved Microsoft sign-in holds more than one account. {_CONNECT_AGAIN}"
+    if not accounts:
+        assert sender is not None
+        return (
+            f"The saved Microsoft sign-in for {sender.address} is missing from DATA_DIR. "
+            "Connect the account again."
+        )
+    if sender is None:
+        return (
+            "A saved Microsoft sign-in was found without its sending address in the database "
+            f"(the app probably stopped while a sign-in was being saved). {_CONNECT_AGAIN}"
+        )
+    if not _same_account(accounts[0], sender):
+        return (
+            "The saved Microsoft sign-in isn't for the sending address the app has stored "
+            f"({sender.address}); the app probably stopped while a new sign-in was being saved. "
+            f"{_CONNECT_AGAIN}"
+        )
+    return None
+
+
 # --- the sign-in -------------------------------------------------------------------------------
 
 
@@ -444,7 +505,8 @@ class MicrosoftAuth:
     # --- loading and saving ---
 
     def load(self) -> None:
-        """Read the cache file and the stored sender. Only touches local files; idempotent.
+        """Read the cache file and the stored sender, and use them only if they agree (see the
+        module docstring). Only touches local files; idempotent.
 
         Everything that uses the cache calls this first, so nothing else touches the cache
         while it is loaded."""
@@ -463,11 +525,20 @@ class MicrosoftAuth:
                     problem = "The saved Microsoft sign-in is damaged. Connect the account again."
                     log.warning("The Microsoft token cache isn't valid JSON")
                     rewrite = False
+            sender = get_sender(self.db)
+            mismatch = _mismatch(_accounts(cache), sender)
+            if mismatch is not None:
+                # File and database disagree (e.g. the app stopped between the two writes of a
+                # sign-in): signed out, the tokens unused. The file is left as it is, like an
+                # unreadable one: the next sign-in replaces it and a sign-out deletes it.
+                log.warning("The saved Microsoft sign-in doesn't match the stored sender; not used")
+                cache = msal.SerializableTokenCache()
+                problem = problem or mismatch
+                rewrite = False
             self._cache = cache
             if rewrite:
                 self._cache.has_state_changed = True
                 self._save()
-            sender = get_sender(self.db)
             has_account = bool(_accounts(cache))
             with self._state_lock:
                 self._cache_problem = problem
@@ -660,9 +731,13 @@ class MicrosoftAuth:
         elif "access_token" in result:
             try:
                 sender = self._profile(result)
+                accounts = _accounts(pending.cache)
+                if len(accounts) != 1 or not accounts[0].get("home_account_id"):
+                    raise SignInError("Microsoft didn't return the signed-in account. Try again.")
+                sender = replace(sender, account_id=str(accounts[0]["home_account_id"]))
                 error = None
             except SignInError as exc:
-                error = str(exc)
+                sender, error = None, str(exc)
         elif result.get("error") in ("authorization_pending", "slow_down"):
             error = _EXPIRED  # the loop ended because the code expired
         else:
@@ -802,6 +877,16 @@ class MicrosoftAuth:
                 accounts = app.get_accounts()
                 if not accounts:
                     raise NotSignedIn("No Microsoft account is connected.")
+                assert current is not None  # signed_in
+                problem = _mismatch(accounts, current)
+                if problem is not None:
+                    # Can't happen while load and the sign-in keep them in step (both are
+                    # switched under _msal_lock); never hand out another account's token.
+                    log.warning("The Microsoft account doesn't match the stored sender; not used")
+                    with self._state_lock:
+                        self._has_account = False
+                        self._cache_problem = problem
+                    raise NotSignedIn(problem)
                 result = app.acquire_token_silent_with_error(
                     list(SCOPES), account=accounts[0], force_refresh=force
                 )
@@ -863,11 +948,29 @@ class MicrosoftAuth:
         log.info("Microsoft account signed out")
 
     def shutdown(self) -> None:
-        """At app shutdown: end a sign-in in progress (waits up to 3 s for its thread, so call
-        it from a thread, not the event loop)."""
+        """At app shutdown: end a sign-in in progress and wait for its thread (so call this
+        from a thread, not the event loop): up to 3 s, or up to 12 s for a sign-in already being
+        saved (it can't be stopped), so that it usually finishes writing the file and the sender.
+
+        Best-effort: a write on DATA_DIR can hang, and Docker (Unraid's Stop, update or array
+        stop) may kill the app sooner. Exiting mid-save is safe anyway: ``load`` finds the file
+        and the database disagreeing at the next start and asks to connect again."""
         with self._state_lock:
             slot = self._slot
+            committing = isinstance(slot, _Flow) and slot.committing
             if slot is not None:
                 self._stop(slot)
-        if isinstance(slot, _Flow) and slot.thread is not None:
-            slot.thread.join(timeout=3)
+        if not isinstance(slot, _Flow) or slot.thread is None:
+            return
+        # Join the sign-in thread itself, not _msal_lock: a token renewal (network) may hold
+        # the lock too, and the thread is what writes the file and the sender.
+        slot.thread.join(
+            timeout=SHUTDOWN_SAVE_WAIT_SECONDS if committing else SHUTDOWN_SIGN_IN_WAIT_SECONDS
+        )
+        if slot.thread.is_alive():
+            log.warning(
+                "The Microsoft sign-in thread was still running at shutdown%s",
+                "; if the sign-in wasn't fully saved, the next start asks to connect again"
+                if committing
+                else "",
+            )

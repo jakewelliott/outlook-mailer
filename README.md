@@ -520,7 +520,11 @@ The saved sign-in (MSAL's token cache) is `DATA_DIR/msal_cache.json`, readable o
 replaced atomically. With `TOKEN_CACHE_KEY` set it is encrypted (Fernet); without it the file is plain JSON and the
 Account page recommends setting a key. Setting a key later encrypts the existing file at the next start. If the key
 changes or is removed, the saved sign-in can't be read: the page says so and the account has to be connected again
-(nothing crashes; putting the old key back also works). Tokens and codes are never logged.
+(nothing crashes; putting the old key back also works). The sending address is stored in the database, separately
+from that file; at every start the app checks that the saved sign-in is for that address's account. If they don't
+match, or only one of them is there (e.g. the container was stopped while a sign-in was being saved), the app
+doesn't use the saved sign-in at all: the Account and home pages say to connect again, and nothing can be sent
+until you do. Tokens and codes are never logged.
 
 You only reconnect after changing the Outlook password, removing the app's access, or about 90 days without use;
 errors from Microsoft are shown in plain words with the code (e.g. `AADSTS7000218` = public client flows not

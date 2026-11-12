@@ -126,7 +126,8 @@ def create_app(
         try:
             yield
         finally:
-            # Joins the sign-in thread (up to 3 s): keep it off the event loop.
+            # Joins the sign-in thread (up to 3 s, 12 s for a sign-in being saved):
+            # keep it off the event loop.
             await asyncio.to_thread(msauth.shutdown)
             await worker.stop()
             await transport.aclose()
