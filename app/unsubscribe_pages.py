@@ -14,7 +14,9 @@ Routes:
   ``MAX_FORM_BYTES`` (from ``Content-Length``, or as soon as the streamed body passes it; never
   buffered further) and a typed value over ``MAX_TYPED_BYTES`` of UTF-8 are mismatches like any
   other, so the typed value is checked before it is normalised or validated. The comparison
-  (email-validator) and the recording run in a worker thread, never on the event loop.
+  (email-validator) and the recording run in a worker thread, never on the event loop. A client
+  that disconnects before the whole body arrives gets an empty 400 (``DISCONNECTED_STATUS``):
+  nothing is recorded, no rate limit is touched and nothing is logged above debug.
 - ``POST /u/<token>/one-click``: the RFC 8058 one-click target, the only URL in the
   ``List-Unsubscribe`` header (``unsubscribe_tokens.one_click_url``). Mail providers can't type
   anything, so it records with no body requirements (``List-Unsubscribe=One-Click`` form-encoded,
@@ -67,10 +69,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from markupsafe import Markup
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from app.campaigns import local_zone
 from app.public_style import PAGE_CSS
@@ -105,6 +108,9 @@ MAX_TYPED_BYTES = MAX_EMAIL_BYTES
 # The form's body (one short field, url-encoded or multipart): anything bigger is a mismatch,
 # refused from its Content-Length or as soon as the streamed body passes the limit.
 MAX_FORM_BYTES = 4096
+# A form POST whose client disconnects mid-body: an empty response the client never sees. 400,
+# not 500: nothing failed on this side (and a 500 would log a traceback for every dropped body).
+DISCONNECTED_STATUS = 400
 _DIGITS_RE = re.compile(r"\d+", re.ASCII)
 
 _env = Environment(
@@ -251,7 +257,8 @@ async def _limited_body(request: Request) -> bytes | None:
 
 
 async def _typed_email(request: Request) -> object:
-    """The form's ``email`` value; None for an oversized or malformed body."""
+    """The form's ``email`` value; None for an oversized or malformed body. Raises
+    ``ClientDisconnect`` if the client disconnects before the body has arrived."""
     body = await _limited_body(request)
     if body is None:
         return None
@@ -281,12 +288,17 @@ def one_click_page(request: Request, token: str) -> HTMLResponse:
 
 
 @router.post(UNSUBSCRIBE_PATH + "{token}")
-async def unsubscribe(request: Request, token: str) -> HTMLResponse:
+async def unsubscribe(request: Request, token: str) -> Response:
     """The confirmation page's form: records only when the typed address matches."""
     email = _start(request, token)
     if email is None:
         return _invalid(request)
-    return await run_in_threadpool(_submit, request, token, email, await _typed_email(request))
+    try:
+        typed = await _typed_email(request)
+    except ClientDisconnect:  # the client left mid-body: nobody to answer, nothing to record
+        log.debug("An unsubscribe form POST was dropped before its body arrived.")
+        return Response(status_code=DISCONNECTED_STATUS)
+    return await run_in_threadpool(_submit, request, token, email, typed)
 
 
 def _submit(request: Request, token: str, email: str, typed: object) -> HTMLResponse:
