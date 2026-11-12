@@ -471,14 +471,11 @@ def test_healthz_head(client: TestClient) -> None:
 # --- Websockets ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def ws_client(auth_settings: Settings, certs: respx.Route) -> TestClient:
-    app = create_app(auth_settings)
-
+def add_test_websockets(app: FastAPI) -> None:
     @app.websocket("/_test/ws")
     async def admin_ws(websocket: WebSocket) -> None:
         await websocket.accept()
-        await websocket.send_text(websocket.state.user_email)
+        await websocket.send_text(websocket.state.user_email or "no-auth")
         await websocket.close()
 
     @app.websocket("/u/_test_ws")
@@ -487,31 +484,82 @@ def ws_client(auth_settings: Settings, certs: respx.Route) -> TestClient:
         await websocket.send_text("public")
         await websocket.close()
 
+
+@pytest.fixture
+def ws_client(auth_settings: Settings, certs: respx.Route) -> TestClient:
+    app = create_app(auth_settings)
+    add_test_websockets(app)
     return TestClient(app, base_url=BASE)
+
+
+def ws_denied(client: TestClient, path: str, headers: dict[str, str]) -> int:
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect(path, headers=headers),
+    ):
+        pass
+    return exc_info.value.code
 
 
 @pytest.mark.parametrize("token", [None, "not-a-jwt", make_token(aud=["other-aud"])])
 def test_admin_websocket_denied_without_valid_jwt(ws_client: TestClient, token: str | None) -> None:
-    headers = {} if token is None else {"Cf-Access-Jwt-Assertion": token}
-    with (
-        pytest.raises(WebSocketDisconnect) as exc_info,
-        ws_client.websocket_connect("/_test/ws", headers=headers),
-    ):
-        pass
-    assert exc_info.value.code == WS_DENIED_CODE
+    headers = {"Origin": BASE} if token is None else {"Origin": BASE, **auth(token)}
+    assert ws_denied(ws_client, "/_test/ws", headers) == WS_DENIED_CODE
 
 
 def test_admin_websocket_allowed_with_valid_jwt(ws_client: TestClient) -> None:
-    with ws_client.websocket_connect("/_test/ws", headers=auth()) as ws:
+    with ws_client.websocket_connect("/_test/ws", headers={"Origin": BASE, **auth()}) as ws:
         assert ws.receive_text() == "jake@example.com"
 
 
+@pytest.mark.parametrize(
+    "origin_headers",
+    [
+        {"Origin": "https://evil.example.com"},
+        {"Origin": "http://mail.example.com"},
+        {"Origin": "wss://mail.example.com"},
+        {"Origin": "null"},
+        {"Referer": f"{BASE}/send/new"},
+        {},
+    ],
+    ids=["other-host", "other-scheme", "ws-scheme", "null", "referer-only", "none"],
+)
+def test_admin_websocket_needs_own_origin(
+    ws_client: TestClient, certs: respx.Route, origin_headers: dict[str, str]
+) -> None:
+    # Cross-site websocket hijacking: the browser sends the Access cookie/JWT anyway.
+    assert ws_denied(ws_client, "/_test/ws", {**auth(), **origin_headers}) == WS_DENIED_CODE
+    assert not certs.called  # refused before any JWT verification
+
+
+def test_admin_websocket_origin_normalised(ws_client: TestClient) -> None:
+    headers = {"Origin": "HTTPS://Mail.Example.com:443", **auth()}
+    with ws_client.websocket_connect("/_test/ws", headers=headers) as ws:
+        assert ws.receive_text() == "jake@example.com"
+
+
+def test_auth_disabled_websocket_origin(settings: Settings) -> None:
+    app = create_app(settings)
+    add_test_websockets(app)
+    client = TestClient(app)
+    # websocket_connect ignores base_url (relative paths go to ws://testserver), so the host the
+    # request is for comes from an absolute URL.
+    url = "ws://localhost:8765/_test/ws"
+    for origin in (BASE, "http://localhost:8765"):
+        with client.websocket_connect(url, headers={"Origin": origin}) as ws:
+            assert ws.receive_text() == "no-auth"
+    for headers in ({"Origin": "http://evil:8765"}, {}):
+        assert ws_denied(client, url, headers) == WS_DENIED_CODE
+
+
 def test_unknown_websocket_path_denied(ws_client: TestClient) -> None:
-    with pytest.raises(WebSocketDisconnect) as exc_info, ws_client.websocket_connect("/anything"):
-        pass
-    assert exc_info.value.code == WS_DENIED_CODE
+    assert ws_denied(ws_client, "/anything", {"Origin": BASE}) == WS_DENIED_CODE
 
 
 def test_public_websocket_needs_no_jwt(ws_client: TestClient) -> None:
-    with ws_client.websocket_connect("/u/_test_ws") as ws:
+    # No Origin check either: public paths are unauthenticated, so a cross-site page gains
+    # nothing it couldn't get by connecting itself.
+    with ws_client.websocket_connect(
+        "/u/_test_ws", headers={"Origin": "https://evil.example.com"}
+    ) as ws:
         assert ws.receive_text() == "public"

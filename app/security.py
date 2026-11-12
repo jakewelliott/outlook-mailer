@@ -8,7 +8,7 @@ CSRF uses signed double-submit: an HttpOnly cookie holds a random nonce, and for
 string, so tokens survive restarts and can't be reused as unsubscribe tokens (or vice versa). A
 cookie planted from another subdomain is useless without the key. The token check runs as a
 router dependency (``csrf_protect``) because it may need the parsed form body; the Origin check
-runs in the middleware for every unsafe admin request.
+runs in the middleware for every unsafe admin request and every admin websocket handshake.
 """
 
 import base64
@@ -207,9 +207,20 @@ class RequestGuard:
         await self.app(scope, receive, send_with_headers)
 
     async def _websocket(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Same public-path / Access decision as HTTP; a refused socket is closed before accept."""
+        """Same public-path / Access decision as HTTP; a refused socket is closed before accept.
+
+        Admin sockets also need ``Origin`` to be this app's: browsers send cookies (including
+        Cloudflare's ``CF_Authorization``) on cross-site handshakes, and there is no CSRF token,
+        so without it any page could open one as the signed-in user. Browsers always send
+        ``Origin`` on a websocket handshake, so the Referer is not accepted in its place. Checked
+        first, so a cross-site handshake never costs a JWT verification.
+        """
         if not is_public_path(scope["path"]):
             conn = HTTPConnection(scope)
+            if not self._origin_ok(conn, allow_referer=False):
+                log.info("Rejected WEBSOCKET %s: bad Origin", conn.url.path)
+                await send({"type": "websocket.close", "code": WS_DENIED_CODE})
+                return
             try:
                 await self._authenticate(conn, "WEBSOCKET")
             except AccessDenied:
@@ -254,10 +265,12 @@ class RequestGuard:
             return PlainTextResponse("Request origin not allowed.", status_code=403)
         return None
 
-    def _origin_ok(self, request: Request) -> bool:
+    def _origin_ok(self, conn: HTTPConnection, *, allow_referer: bool = True) -> bool:
         # "Origin: null" (sandboxed frames, no-referrer pages, privacy redirects) is not a URL, so
         # _origin() returns None and it is rejected; the Referer is not consulted in its place.
-        raw = request.headers.get("origin") or request.headers.get("referer")
+        raw = conn.headers.get("origin")
+        if not raw and allow_referer:
+            raw = conn.headers.get("referer")
         if not raw:
             return False
         origin = _origin(raw)
@@ -265,9 +278,11 @@ class RequestGuard:
             return False
         allowed = {self.allowed_origin}
         if self.settings.auth_disabled:
-            host = request.headers.get("host")
+            host = conn.headers.get("host")
             if host:
-                allowed.add(_origin(f"{request.url.scheme}://{host}"))
+                # A websocket's own URL is ws:// or wss://; the page that opens it is http(s).
+                scheme = {"ws": "http", "wss": "https"}.get(conn.url.scheme, conn.url.scheme)
+                allowed.add(_origin(f"{scheme}://{host}"))
         return origin in allowed
 
     def _cookie(self, nonce: str) -> str:
