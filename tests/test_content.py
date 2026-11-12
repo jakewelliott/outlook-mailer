@@ -91,6 +91,16 @@ def tag(name: str, attrs: str = "") -> str:
             "https://example.com",
         ),
         (
+            '[our shop](https://example.com/shop "Open the shop")',
+            '<p><a href="https://example.com/shop">our shop</a></p>',
+            "our shop (https://example.com/shop)",
+        ),
+        (
+            "[shop](https://example.com '{{first_name}}') [s](https://e.com (\"x\"))",
+            '<p><a href="https://example.com">shop</a> <a href="https://e.com">s</a></p>',
+            "shop (https://example.com) s (https://e.com)",
+        ),
+        (
             "[Write to us](mailto:shop@example.com)",
             '<p><a href="mailto:shop@example.com">Write to us</a></p>',
             "Write to us (mailto:shop@example.com)",

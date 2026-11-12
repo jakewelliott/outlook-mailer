@@ -10,6 +10,7 @@ Supported syntax (anything else stays as typed text):
 - ``[text](url)`` and ``<https://...>``. Only ``https``, ``http`` and ``mailto`` links; anything
   else (``javascript:``, ``data:``, relative, ``//host``) is an error, not silently dropped. Bare
   URLs are not turned into links here (that needs another dependency); mail clients link them.
+  A link title (``[text](url "title")``) is dropped from both versions: the help page says so.
 - Bullet (``-``, ``*``, ``+``) and numbered lists, headings ``#`` and ``##`` (``###`` and deeper
   are shown as ``##``).
 - Raw HTML is escaped. Images are an error (the template has its own). Code blocks, inline code,
