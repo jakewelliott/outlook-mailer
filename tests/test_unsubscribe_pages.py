@@ -26,6 +26,7 @@ from tests.test_security import AUD, TEAM
 from tests.test_sender import FakeClock
 from tests.test_ui_campaigns import ready_draft, start, step_all
 from tests.test_ui_compose import BASE
+from tests.test_unsubscribes import save_by_rename
 
 SECRET = "x" * 32  # conftest's UNSUBSCRIBE_SECRET
 ADA = "ada@example.com"
@@ -464,6 +465,21 @@ def test_file_locked_too_long_is_a_503(
     # Once the lock is free, the same request records.
     r = client.post(path_for(ADA), **typed(ADA)) if form else client.post(one_click_for(ADA))
     assert r.status_code == 200 and ADA in (file_text(tmp_path) or "")
+
+
+@pytest.mark.parametrize("form", [False, True])
+def test_file_replaced_every_try_is_a_503(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, form: bool
+) -> None:
+    """An editor saving by rename at every try: the opt-out never reaches the file now there,
+    so the page says try again, never that it worked."""
+    path = tmp_path / "unsubscribed.txt"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(unsubscribes, "_before_append", lambda: save_by_rename(path, b""))
+    r = client.post(path_for(ADA), **typed(ADA)) if form else client.post(one_click_for(ADA))
+    assert r.status_code == 503 and "try again" in r.text
+    assert r.headers["retry-after"] == unsubscribe_pages.WRITE_RETRY_AFTER
+    assert file_text(tmp_path) == ""  # nothing recorded
 
 
 def test_send_worker_sends_nothing_while_the_file_is_locked(

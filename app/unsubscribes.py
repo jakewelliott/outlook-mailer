@@ -16,6 +16,14 @@ appends, so two requests (threads or processes) can't both append the same addre
 their lines. Readers here take a shared lock, so they never see half of an appended line. A person
 editing the file by hand takes no lock; that is fine for the occasional edit.
 
+Many editors save by writing a new file and renaming it over the old one. An append that raced
+such a save would land in the old, unlinked file and be lost, so the writer checks, after taking
+the lock and again after its fsync, that the path still names the file it has open (``st_dev`` and
+``st_ino``). If not (replaced or deleted), it starts again on the file now there, dedupe included,
+up to ``REPLACE_ATTEMPTS`` times, then raises ``FileReplaced`` (an ``OSError``: a 503 "try
+again"). Readers don't check: a read that raced a save returns the file as it was a moment
+before, and the send worker rereads before every message.
+
 Lock waits are bounded: the lock is tried without blocking (``LOCK_NB``) every
 ``LOCK_POLL_SECONDS`` for up to ``LOCK_WAIT_SECONDS``, then ``LockTimeout`` (an ``OSError``) is
 raised, so a stuck lock holder can't hang a request or the send worker for ever. The public POST
@@ -44,6 +52,7 @@ FILENAME = "unsubscribed.txt"
 FILE_MODE = 0o600  # only when the app creates the file; an existing file keeps its mode
 LOCK_WAIT_SECONDS = 10.0
 LOCK_POLL_SECONDS = 0.05
+REPLACE_ATTEMPTS = 3  # tries at recording when the file keeps being replaced under the writer
 
 _monotonic: Callable[[], float] = time.monotonic
 _sleep: Callable[[float], None] = time.sleep
@@ -53,9 +62,15 @@ class LockTimeout(OSError):
     """``unsubscribed.txt`` stayed locked by someone else for ``LOCK_WAIT_SECONDS``."""
 
 
-def _lock(fd: int, op: int) -> None:
-    """Take ``op`` (``LOCK_SH`` / ``LOCK_EX``) on ``fd``, waiting at most ``LOCK_WAIT_SECONDS``."""
-    deadline = _monotonic() + LOCK_WAIT_SECONDS
+class FileReplaced(OSError):
+    """``unsubscribed.txt`` was replaced or deleted during each of ``REPLACE_ATTEMPTS`` tries."""
+
+
+def _lock(fd: int, op: int, deadline: float | None = None) -> None:
+    """Take ``op`` (``LOCK_SH`` / ``LOCK_EX``) on ``fd``, waiting at most ``LOCK_WAIT_SECONDS``
+    (or until ``deadline``, a ``_monotonic`` time, when given)."""
+    if deadline is None:
+        deadline = _monotonic() + LOCK_WAIT_SECONDS
     while True:
         try:
             fcntl.flock(fd, op | fcntl.LOCK_NB)
@@ -182,27 +197,55 @@ def record_unsubscribe(data_dir: str | Path, email: str, at: datetime) -> bool:
     the append happen under an exclusive lock and the line is fsynced before returning, so a
     "You're unsubscribed" page is only shown once the opt-out is on disk. A file whose last line
     has no newline (edited by hand) gets one first, so the new entry starts its own line.
-    Raises ``OSError`` if the file can't be written (``LockTimeout`` if it stays locked).
+    If the file is replaced or deleted while this runs (an editor saving by rename), it starts
+    again on the file now at the path, up to ``REPLACE_ATTEMPTS`` times in all.
+    Raises ``OSError`` if the file can't be written (``LockTimeout`` if it stays locked,
+    ``FileReplaced`` if it kept being replaced). One ``LOCK_WAIT_SECONDS`` covers all attempts.
     """
     if "\t" in email or "\n" in email or "\r" in email:
         raise ValueError("an address can't contain a tab or a line break")
     path = Path(data_dir) / FILENAME
     keys = address_keys(email)
+    line = f"{email}\t{at.isoformat(timespec='seconds')}\n".encode()
+    deadline = _monotonic() + LOCK_WAIT_SECONDS
+    for _ in range(REPLACE_ATTEMPTS):
+        added = _record_once(path, keys, line, deadline)
+        if added is not None:
+            return added
+    raise FileReplaced(f"{FILENAME} kept being replaced while recording an opt-out")
+
+
+def _is_open_file(fd: int, path: Path) -> bool:
+    """Whether ``path`` still names the file ``fd`` has open (not replaced, not deleted)."""
+    try:
+        named = os.stat(path)
+    except FileNotFoundError:
+        return False
+    opened = os.fstat(fd)
+    return (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino)
+
+
+def _record_once(path: Path, keys: frozenset[str], line: bytes, deadline: float) -> bool | None:
+    """One try of ``record_unsubscribe``: True appended, False already there, None if the file
+    at ``path`` was replaced or deleted before the line was safely in it (try again)."""
     created = not path.exists()
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, FILE_MODE)
     try:
-        _lock(fd, fcntl.LOCK_EX)
+        _lock(fd, fcntl.LOCK_EX, deadline)
+        if not _is_open_file(fd, path):  # replaced between the open and the lock
+            return None
         with os.fdopen(os.dup(fd), "rb") as f:
             f.seek(0)
             existing = f.read()
         if not parse_unsubscribed(_decode(existing)).isdisjoint(keys):
             return False
         _before_append()
-        line = f"{email}\t{at.isoformat(timespec='seconds')}\n".encode()
         if existing and not existing.endswith(b"\n"):
             line = b"\n" + line
         _write_all(fd, line)  # O_APPEND: always at the end, whatever else wrote meanwhile
         os.fsync(fd)
+        if not _is_open_file(fd, path):  # replaced meanwhile: the line went to the old file
+            return None
     finally:
         os.close(fd)  # also releases the lock
     if created:
