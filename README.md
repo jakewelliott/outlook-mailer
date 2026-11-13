@@ -698,8 +698,8 @@ Cloudflare Access.
 
 ## Development
 
-The tests (about 1,050) run in a throwaway Python container, so nothing needs to be installed on the host. From the
-repository root (takes about 5 minutes):
+The tests (about 1,175) run in a throwaway Python container, so nothing needs to be installed on the host. From the
+repository root (takes 5 to 10 minutes):
 
 ```sh
 docker run --rm -v "$PWD":/src:ro python:3.12-slim sh -c "cp -r /src /work && useradd -m t && chown -R t /work \
