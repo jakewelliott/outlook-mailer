@@ -250,8 +250,8 @@ As built (stage 14, 2026-11-12; docs and release prep only, no app behaviour cha
   Compose, first Outlook sign-in, optional mock dry run, first test and real send, post-deploy checks), secrets,
   backups and restoring, operating reminders, updating (image tags), stopping safely (12 s < 15 s < 30 s; Unraid's Stop, updates and array
   stop use the global Docker Stop Timeout, default 10 s, so "pause a running send first" is the rule),
-  configuration, how it works, development (test command with `--root-user-action=ignore` and the clean-up of
-  root-owned caches), credits.
+  configuration, how it works, development (test command; since the CI fix it runs as a non-root user on a copy, leaving
+  nothing root-owned in the repo), credits.
 - `docs/cloudflare.md` (new): tunnel route to `http://<server-LAN-IP>:8765` (tunnel container on a bridge network;
   **Protect with Access** off), whole-site Access application with an Allow policy, a separate bypass application
   for `u/*`, `img/*` and `healthz` (with a `curl` check that `POST /u/x/one-click` is covered, and the fallback
